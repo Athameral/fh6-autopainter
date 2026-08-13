@@ -16,7 +16,7 @@ import taichi as ti
 from PIL import Image
 
 from src.kernels.colors import rgb_to_ycbcr as _rgb_to_ycbcr  # unused directly, for docs
-from src.kernels.sampling import compute_error_field, sample_from_error, sample_from_error_topk
+from src.kernels.sampling import compute_error_field, sample_from_error, sample_from_error_topk, build_valid_pixels_and_mask
 from src.kernels.evaluate import generate_and_pick_best, mutate_and_pick_best
 from src.kernels.render import apply_ellipse
 from src.kernels.sharpening import sharpen_kernel
@@ -38,7 +38,7 @@ W = 1024
 H = 662
 MAX_SHAPES = ARGS.shapes or 2500
 RANDOM_SAMPLES = 60000
-HILL_CLIMB_ROUNDS = 48
+HILL_CLIMB_ROUNDS = 12
 MUTATIONS_PER_ROUND = 8000
 MOVE_STEP = 8.0
 RADIUS_STEP = 6.0
@@ -55,15 +55,35 @@ SAVE_EVERY = 50
 IMG_PATH = ARGS.image or os.path.join(os.path.dirname(__file__), "pics", "01.png")
 
 
+# ── Taichi ndarray 缓冲区（一次性分配，复用）────────────────────────────
+# 注意 ti.types.vector(6) 映射为 (1, 6) 的 float32 ndarray
+error_field = ti.ndarray(ti.f32, shape=(H, W))
+error_field_buffer = ti.ndarray(ti.f32, shape=(H, W))
+sampled_pixels = ti.ndarray(ti.math.vec2, shape=(RANDOM_SAMPLES,))
+best_ellipse = ti.ndarray(ti.types.vector(6, ti.f32), shape=(1,))
+best_ycbcr = ti.ndarray(ti.math.vec3, shape=(1,))
+best_score = ti.ndarray(ti.f32, shape=(1,))
+hist_buffer = ti.ndarray(ti.i32, shape=(1024,))  # sample_from_error_topk 用于直方图
+valid_mask = ti.ndarray(ti.i32, shape=(H, W))  # 1=有效像素，0=无效像素（alpha=0）
+valid_pixels = ti.ndarray(
+    ti.types.vector(2, ti.i32), shape=(H * W,)
+)  # 有效像素坐标列表
+valid_n_pixels = ti.ndarray(ti.i32, shape=(1,))  # 有效像素数量（有效像素列表长度）
+diag = np.sqrt(W * W + H * H).astype(np.float32)
+
 def load_target():
-    img = Image.open(IMG_PATH).convert("RGB").resize((W, H), Image.LANCZOS)
-    arr = np.asarray(img, dtype=np.float32) / 255.0  # (H, W, 3) RGB
+    img = Image.open(IMG_PATH).convert("RGBA").resize((W, H), Image.LANCZOS)
+    arr_img = np.asarray(img, dtype=np.float32) / 255.0  # (H, W, 4) RGBA
+    arr = np.ascontiguousarray(arr_img[..., :3])
+    arr_alpha = np.ascontiguousarray(arr_img[..., 3])
     target = arr.copy()
 
     # 背景色 = 边缘平均（RGB）
     edge = np.concatenate([arr[0, :], arr[-1, :], arr[:, 0], arr[:, -1]], axis=0)
     bg = edge.mean(axis=0, keepdims=True).astype(np.float32)
     canvas = np.tile(bg, (H, W, 1)).astype(np.float32)
+
+    build_valid_pixels_and_mask(arr_alpha, valid_pixels, valid_n_pixels, valid_mask)
 
     print(f"画布底色: {np.round(np.clip(bg[0], 0, 1), 2)} (RGB)")
     print(f"目标图: {IMG_PATH}  ({W}x{H})")
@@ -72,18 +92,6 @@ def load_target():
 
 canvas, target_origin = load_target()
 target = target_origin.copy()
-
-# ── Taichi ndarray 缓冲区（一次性分配，复用）────────────────────────────
-# 注意 ti.types.vector(6) 映射为 (1, 6) 的 float32 ndarray
-error_field = ti.ndarray(ti.f32, shape=(H, W))
-error_field_buffer = ti.ndarray(ti.f32, shape=(H, W))
-sampled_pixels = ti.ndarray(ti.math.vec2, shape=(RANDOM_SAMPLES, ))
-best_ellipse = ti.ndarray(ti.types.vector(6, ti.f32), shape=(1, ))
-best_ycbcr = ti.ndarray(ti.math.vec3, shape=(1, ))
-best_score = ti.ndarray(ti.f32, shape=(1, ))
-hist_buffer = ti.ndarray(ti.i32, shape=(1024, ))  # sample_from_error_topk 用于直方图
-
-diag = np.sqrt(W * W + H * H).astype(np.float32)
 
 
 # ── 单步：生成一个椭圆并画上去 ──────────────────────────────────────────
@@ -99,21 +107,21 @@ def one_shape(shape_i: int, canvas: np.ndarray) -> np.ndarray:
     # sample_step = 1
 
     # 1. 误差场
-    compute_error_field(canvas, target, error_field, error_field_buffer, blur_size=5)
+    compute_error_field(canvas, target, valid_mask, error_field, error_field_buffer, blur_size=5)
     # ti.sync()
 
     # 2. 重要性采样
     # sample_from_error(RANDOM_SAMPLES, MAX_ATTEMPTS, error_field, sampled_pixels)
     # n_samples_actual[0] = RANDOM_SAMPLES
     # or below
-    sample_from_error_topk(RANDOM_SAMPLES, 1024, 0.1, hist_buffer, error_field, sampled_pixels)
+    sample_from_error_topk(RANDOM_SAMPLES, 1024, 0.1, valid_pixels, valid_n_pixels, hist_buffer, error_field, sampled_pixels)
     # ti.sync()
 
     # 3. 随机搜索
     generate_and_pick_best(
         MIN_RADIUS, max_radius, MIN_ALPHA, MAX_ALPHA,
         RANDOM_SAMPLES, sampled_pixels,
-        canvas, target, sample_step,
+        canvas, target, valid_mask, sample_step,
         best_ellipse, best_ycbcr, best_score,
     )
     # ti.sync()
@@ -126,7 +134,7 @@ def one_shape(shape_i: int, canvas: np.ndarray) -> np.ndarray:
             best_ellipse,
             MUTATIONS_PER_ROUND,
             move_step, radius_step, THETA_STEP_RAD, ALPHA_STEP,
-            canvas, target, sample_step,
+            canvas, target, valid_mask, sample_step,
             best_ellipse, best_ycbcr, best_score,
         )
     # ti.sync()

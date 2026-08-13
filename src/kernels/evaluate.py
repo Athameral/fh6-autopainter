@@ -11,6 +11,7 @@ def compute_optimal_color_and_score(
     ellipse: ti.types.vector(6),
     canvas: ti.types.ndarray(dtype=tm.vec3, ndim=2),
     target: ti.types.ndarray(dtype=tm.vec3, ndim=2),
+    valid_mask: ti.types.ndarray(dtype=ti.i32, ndim=2),
     sample_step: ti.i32,
     out_ycbcr: ti.template(),
     out_score: ti.template(),
@@ -49,6 +50,8 @@ def compute_optimal_color_and_score(
     sY2 = 0.0;     sCb2 = 0.0;     sCr2 = 0.0      # Σ current²
     stY = 0.0;     stCb = 0.0;     stCr = 0.0      # Σ current*target
 
+    broken_alpha = 0
+
     for y in range(y_min, y_max + 1):
         dy = ti.cast(y, ti.f32) + 0.5 - cy
         for x in range(x_min, x_max + 1):
@@ -63,6 +66,8 @@ def compute_optimal_color_and_score(
 
             if xr * xr * inv_rx2 + yr * yr * inv_ry2 <= 1.0:
                 N += 1
+                if valid_mask[y, x] == 0:
+                    broken_alpha += 1
                 sc = rgb_to_ycbcr(canvas[y, x])   # current (RGB→YCbCr on the fly)
                 tc = rgb_to_ycbcr(target[y, x])   # target (RGB→YCbCr on the fly)
                 # Y 通道
@@ -76,7 +81,7 @@ def compute_optimal_color_and_score(
                 sCr2 += sc[2] * sc[2]; stCr += sc[2] * tc[2]
 
     # 解析求最优颜色 & ΔMSE
-    if N > 0:
+    if N > 0 and broken_alpha < N * 1e-2:
         invN = 1.0 / ti.cast(N, ti.f32)
         invA = 1.0 - alpha
 
@@ -124,6 +129,7 @@ def generate_and_pick_best(
     sampled_pixels: ti.types.ndarray(dtype=ti.math.vec2, ndim=1),
     canvas: ti.types.ndarray(dtype=tm.vec3, ndim=2),
     target: ti.types.ndarray(dtype=tm.vec3, ndim=2),
+    valid_mask: ti.types.ndarray(dtype=ti.i32, ndim=2),
     sample_step: ti.i32,
     out_best_ellipse: ti.types.ndarray(dtype=ti.types.vector(6), ndim=1),
     # out_best_ellipse[0] = (x, y, rx, ry, alpha, theta)
@@ -153,7 +159,7 @@ def generate_and_pick_best(
         ell[5] = ti.random(ti.f32) * 2.0 * tm.pi                             # theta (rad)
 
         # ---- evaluate ----
-        compute_optimal_color_and_score(ell, canvas, target,
+        compute_optimal_color_and_score(ell, canvas, target, valid_mask,
                                         sample_step, tmp_ycbcr, tmp_score)
 
         # ---- track best ----
@@ -178,6 +184,7 @@ def mutate_and_pick_best(
     alpha_step: ti.f32,
     canvas: ti.types.ndarray(dtype=tm.vec3, ndim=2),
     target: ti.types.ndarray(dtype=tm.vec3, ndim=2),
+    valid_mask: ti.types.ndarray(dtype=ti.i32, ndim=2),
     sample_step: ti.i32,
     out_best_ellipse: ti.types.ndarray(dtype=ti.types.vector(6), ndim=1),
     out_best_ycbcr: ti.types.ndarray(dtype=tm.vec3, ndim=1),
@@ -198,7 +205,8 @@ def mutate_and_pick_best(
 
     # evaluate the base first
     compute_optimal_color_and_score(
-        base_ellipse[0], canvas, target, sample_step, tmp_ycbcr, tmp_score)
+        base_ellipse[0], canvas, target, valid_mask,
+        sample_step, tmp_ycbcr, tmp_score)
 
     best_score = tmp_score
     best_ellipse = base_ellipse[0]
@@ -225,7 +233,7 @@ def mutate_and_pick_best(
 
         ell = ti.Vector([x, y, rx, ry, alpha, theta])
 
-        compute_optimal_color_and_score(ell, canvas, target,
+        compute_optimal_color_and_score(ell, canvas, target, valid_mask,
                                         sample_step, tmp_ycbcr, tmp_score)
         score = tmp_score
         ycbcr = tmp_ycbcr

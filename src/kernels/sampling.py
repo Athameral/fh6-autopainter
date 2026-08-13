@@ -10,21 +10,46 @@ from .colors import rgb_to_ycbcr
 # 其次生成时拒绝明显踩了透明位置的椭圆
 # 最后按踩了透明点的数量惩罚分数
 
+
+@ti.kernel
+def build_valid_pixels_and_mask(
+    alpha: ti.types.ndarray(dtype=ti.f32, ndim=2),
+    out_valid_pixels: ti.types.ndarray(dtype=ti.types.vector(2, ti.i32), ndim=1),
+    out_n_valid_pixels: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    out_mask: ti.types.ndarray(dtype=ti.i32, ndim=2),
+):
+    """Build a mask of valid pixels (1 for valid, 0 for invalid) based on alpha channel."""
+    for I in ti.grouped(alpha):
+        out_mask[I] = 1 if alpha[I] > 0.01 else 0
+
+    valid_count = 0
+    for I in ti.grouped(out_mask):
+        if out_mask[I] == 1:
+            idx = ti.atomic_add(valid_count, 1)
+            out_valid_pixels[idx][0] = I[1]  # x
+            out_valid_pixels[idx][1] = I[0]  # y
+    out_n_valid_pixels[0] = valid_count
+
 @ti.kernel
 def compute_error_field(canvas: ti.types.ndarray(dtype=tm.vec3, ndim=2),
                         target: ti.types.ndarray(dtype=tm.vec3, ndim=2),
+                        valid_mask: ti.types.ndarray(dtype=ti.i32, ndim=2),
                         out_error_field: ti.types.ndarray(dtype=ti.f32, ndim=2),
                         error_field_buffer: ti.types.ndarray(dtype=ti.f32, ndim=2),
                         blur_size: ti.i32):
     """Per-pixel error in YCbCr space (L1 sum over 3 channels), normalized to [0,1].
     canvas and target are both RGB; conversion to YCbCr happens on the fly."""
+    for I in ti.grouped(error_field_buffer):
+        error_field_buffer[I] = 0.0
+    
     max_error = 0.0
     for I in ti.grouped(canvas):
-        c1 = rgb_to_ycbcr(canvas[I])
-        c2 = rgb_to_ycbcr(target[I])
-        e = ti.abs(c1[0] - c2[0]) + ti.abs(c1[1] - c2[1]) + ti.abs(c1[2] - c2[2])
-        error_field_buffer[I] = e
-        ti.atomic_max(max_error, e)
+        if valid_mask[I] == 1:
+            c1 = rgb_to_ycbcr(canvas[I])
+            c2 = rgb_to_ycbcr(target[I])
+            e = ti.abs(c1[0] - c2[0]) + ti.abs(c1[1] - c2[1]) + ti.abs(c1[2] - c2[2])
+            error_field_buffer[I] = e
+            ti.atomic_max(max_error, e)
     for I in ti.grouped(error_field_buffer):
         error_field_buffer[I] = error_field_buffer[I] / max_error
     H, W = error_field_buffer.shape[0], error_field_buffer.shape[1]
@@ -70,6 +95,8 @@ def sample_from_error_topk(
     # how likely to sample from the pixels below the threshold (0.0 ~ 1.0)
     # since it's not always good to ignore the low-error pixels,
     # we allow a small leak ratio, 0.1 is good
+    valid_pixels: ti.types.ndarray(dtype=ti.types.vector(2, ti.i32), ndim=1),
+    n_valid_pixels: ti.types.ndarray(dtype=ti.i32, ndim=1),
     hist_buffer: ti.types.ndarray(dtype=ti.i32, ndim=1),
     error_field: ti.types.ndarray(dtype=ti.f32, ndim=2),
     out_sampled_pixels: ti.types.ndarray(dtype=ti.math.vec2, ndim=1),
@@ -133,8 +160,6 @@ def sample_from_error_topk(
                 out_sampled_pixels[idx] = ti.math.vec2(I[1], I[0])  # (x, y)
 
     for i in range(n_samples_leak):
-        x = ti.random(ti.i32) % error_field.shape[1]
-        y = ti.random(ti.i32) % error_field.shape[0]
         idx = ti.atomic_add(topk_count, 1)
         if idx < n_samples:
-            out_sampled_pixels[idx] = ti.math.vec2(x, y)
+            out_sampled_pixels[idx] = valid_pixels[ti.random(ti.i32) % n_valid_pixels[0]]
