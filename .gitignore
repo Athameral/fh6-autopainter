@@ -1,0 +1,15 @@
+# clangd
+.cache
+compile_commands.json
+
+# vcpkg
+local_installed
+vcpkg-configuration.json
+
+# build
+out
+
+# imgui
+imgui.ini
+
+**/__pycache__/
