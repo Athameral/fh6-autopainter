@@ -28,6 +28,7 @@ add_subdirectory(3rd/taichi)
 
 # 4. 主程序 Target（stb_impl.cpp 提供 stb_image/stb_image_write 实现）
 add_executable(my_app src/app/main.cpp)
+add_executable(test_app src/app/test.cpp)
 
 
 # # 5. 包含 Taichi C/C++ API 的头文件路径（external/include 提供 stb 单头文件库）
