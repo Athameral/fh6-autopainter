@@ -30,6 +30,51 @@ add_subdirectory(3rd/taichi)
 add_executable(my_app src/app/main.cpp)
 add_executable(test_app src/app/test.cpp)
 
+# imgui
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd/imgui)
+
+set(IMGUI_SOURCES
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    # backends
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+)
+target_sources(my_app PRIVATE
+    ${IMGUI_SOURCES}
+    src/app/appui.cpp
+    src/app/gpuworker.cpp
+    src/app/injector.cpp
+)
+target_include_directories(my_app PRIVATE
+                           ${IMGUI_DIR}
+                           ${IMGUI_DIR}/backends
+                           # glfw
+                           3rd/taichi/external/glfw/include
+                           # vulkan 头文件（Taichi 自带，注意目录名是 Vulkan-Headers）
+                           3rd/taichi/external/Vulkan-Headers/include
+                           3rd/taichi/external/VulkanMemoryAllocator/include
+                           # volk：Vulkan 函数指针声明 + 动态加载器
+                           3rd/taichi/external/volk
+                           # spdlog
+                           3rd/taichi/external/spdlog/include
+                           # cimg
+                           # 3rd/CImg
+                           )
+# imgui 官方例程（src/app/main.cpp）自带 Volk 支持：
+#   定义 IMGUI_IMPL_VULKAN_USE_VOLK 后，imgui_impl_vulkan.h 会 include <volk.h>，
+#   volk.h 把 vk* 全部声明为全局函数指针变量（VK_NO_PROTOTYPES），
+#   main.cpp 里的 #define VOLK_IMPLEMENTATION 提供这些指针的定义，
+#   运行时 volkInitialize()/volkLoadInstance() 加载 vulkan-1.dll。
+#   → 不需要安装 Vulkan SDK，也不需要链接 vulkan-1.lib。
+# 注意：不要用 IMGUI_IMPL_VULKAN_NO_PROTOTYPES（那只对 imgui 后端生效，
+#   main.cpp 自身的 vkCreateInstance 等直接调用仍会报未定义符号）。
+target_compile_definitions(my_app PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
+target_link_libraries(my_app PRIVATE glfw )
+
 
 # # 5. 包含 Taichi C/C++ API 的头文件路径（external/include 提供 stb 单头文件库）
 target_include_directories(my_app PRIVATE
@@ -39,7 +84,13 @@ target_include_directories(my_app PRIVATE
 )
 
 # # 6. 链接 Taichi 静态库、AOT 资源以及系统的图形驱动库
+#    注意：Vulkan 不需要显式链接！Taichi 与 GLFW 都在运行时动态加载 vulkan-1.dll
+#    （Taichi 通过 volk，GLFW 在 Windows 上默认行为）。
 target_link_libraries(my_app PRIVATE
     taichi_c_api
 )
-target_link_options(my_app PRIVATE -static -Wl,--gc-sections -s -Wl,--icf=safe)
+target_link_options(my_app PRIVATE -static -Wl,--gc-sections -s -Wl,--icf=safe
+    # main.cpp 与 taichi 静态库内部都编译了 volk（VOLK_IMPLEMENTATION），
+    # 两处定义语义相同（全局函数指针，运行时由 volkInitialize 填充），
+    # 允许重复定义并取第一个（main.o 在前），否则链接会报 multiple definition。
+    -Wl,--allow-multiple-definition)
