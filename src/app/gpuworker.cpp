@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdint>
 #include <thread>
+#include <vector>
 
 #include <taichi/cpp/taichi.hpp>
 #include <utility>
@@ -127,13 +128,25 @@ void GPUWorker::run()
     while (!should_exit)
     {
         launch_graph.wait(false); // Wait until launch_graph is set to true
+        std::cerr << "GPUWorker: Starting generation loop..." << std::endl;
 
         // set our params and buffers
         bind_graph_args();
 
+        // 首次运行（或 buffer 重建后）：清空 canvas。
+        // write() 走 staging 异步提交，拷贝命令在同队列 FIFO 排在 g1 之前，天然正确。
+        if (!canvas_cleared)
+        {
+            std::vector<float> zeros((size_t)params.canvas_w * params.canvas_h * 3, 0.0f);
+            gpu_buffer.canvas.write(zeros.data(), zeros.size());
+            canvas_cleared = true;
+            std::cerr << "GPUWorker: canvas cleared (" << params.canvas_w << "x" << params.canvas_h << ")" << std::endl;
+        }
+
         // step 0. sharpen image, optional, can be done on CPU
         for (int step = 0; step < (int)params.total_shapes; ++step)
         {
+            std::cerr << "GPUWorker: Generating shape " << step + 1 << " of " << params.total_shapes << std::endl;
             if (generate_interrupted || should_exit)
             {
                 generate_interrupted = false;
@@ -155,13 +168,32 @@ void GPUWorker::run()
             // and write results to buffer, wait for reading.
             g3.launch();
 
-            runtime.wait();
+            // 注意：worker 线程【绝不能】调 runtime.wait()（= vkQueueWaitIdle 等整条队列排空）。
+            // 主线程每帧都向同一条队列提交 ImGui 渲染命令，队列永远排不空 → worker 被卡死。
+            // 清理 Taichi 内部 submitted_cmdbuffers_（fence/semaphore 泄漏）的责任由主线程承担：
+            // 主线程每帧渲染前调 runtime.wait()，它本来就在等 vsync，多等 worker 命令无感，
+            // 且 worker 此时阻塞在 gui_ack.wait 上（不会提交新命令），队列稳定，wait 不卡。
+            //（原来每 50 步 wait 的方案废弃：仍会被主线程渲染拖住）
 
-            gpu_buffer.best_ellipse.read(&best_ellipse_cpu.Shape.x, sizeof(best_ellipse_cpu.Shape) / sizeof(float));
-            gpu_buffer.best_ycbcr.read(&best_ellipse_cpu.Color.Y, sizeof(best_ellipse_cpu.Color) / sizeof(float));
+            // 把最新 canvas 拷到显示纹理：同一队列，拷贝排在 kernel 之后、主线程
+            // ImGui 渲染之前，无额外同步开销（同队列 FIFO 天然有序）。
+            if (canvas_display)
+            {
+                canvas_display->queueUpload(gpu_buffer.canvas, runtime);
+            }
+            else
+            {
+                std::cerr << "GPUWorker: canvas_display is null, skipping upload" << std::endl;
+            }
+
             // TODO: write ellipse to buffer and let gui read
+            //（best_* read 已移到主线程 wait 之后，避免 host/device 竞争）
+            gui_ack = false;
             gui_ack.wait(false); // Wait for GUI to acknowledge that it has processed the results
         }
+
+        // 一轮完成：复位 launch_graph，等用户再次 Start（否则 wait(false) 立即通过、无限重跑）
+        launch_graph = false;
     }
     return;
 }
@@ -176,4 +208,5 @@ void GPUWorker::remakeBuffer()
 {
     gpu_buffer = PainterGPUBuffer(runtime, params);
     bind_graph_args();
+    canvas_cleared = false; // 新 buffer 需要重新清零
 }

@@ -29,6 +29,7 @@
 #endif
 
 #include "appui.h"
+#include <taichi/taichi_vulkan.h> // ti_import_vulkan_runtime / ti_export_vulkan_memory 等互操作接口
 
 
 // [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and
@@ -168,6 +169,20 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
     g_QueueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex(g_PhysicalDevice);
     IM_ASSERT(g_QueueFamily != (uint32_t)-1);
 
+    // Taichi 的 compute 提交需要 VK_QUEUE_COMPUTE_BIT。
+    // 我们让 Taichi 与 ImGui 共用同一个队列（现代桌面 GPU 的 graphics 队列族通常带 compute bit），
+    // 这样 kernel 提交与拷贝/渲染命令天然按提交顺序串行，无需额外同步。
+    uint32_t qf_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qf_count, nullptr);
+    ImVector<VkQueueFamilyProperties> qf_props;
+    qf_props.resize(qf_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qf_count, qf_props.Data);
+    if (!(qf_props[g_QueueFamily].queueFlags & VK_QUEUE_COMPUTE_BIT))
+    {
+        fprintf(stderr, "[vulkan] Selected queue family lacks VK_QUEUE_COMPUTE_BIT; Taichi cannot run on it.\n");
+        exit(-1);
+    }
+
     // Create Logical Device (with 1 queue)
     {
         ImVector<const char *> device_extensions;
@@ -204,9 +219,10 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
     // Create Descriptor Pool
     // If you wish to load e.g. additional textures you may need to alter pools sizes and maxSets.
     {
+        // 额外 +8/+4：给方案 B 的 target 显示纹理（ImGui_ImplVulkan_AddTexture）预留 descriptor
         VkDescriptorPoolSize pool_sizes[] = {
-            {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE},
-            {VK_DESCRIPTOR_TYPE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE},
+            {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE + 8},
+            {VK_DESCRIPTOR_TYPE_SAMPLER, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE + 4},
         };
         VkDescriptorPoolCreateInfo pool_info = {};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -443,8 +459,7 @@ int main(int, char **)
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForVulkan(window, true);
     ImGui_ImplVulkan_InitInfo init_info = {};
-    // init_info.ApiVersion = VK_API_VERSION_1_3;              // Pass in your value of VkApplicationInfo::apiVersion,
-    // otherwise will default to header version.
+    init_info.ApiVersion = VK_API_VERSION_1_3; // 与 Taichi interop 的 api_version 保持一致（>=1.2 → SPIR-V 1.5）
     init_info.Instance = g_Instance;
     init_info.PhysicalDevice = g_PhysicalDevice;
     init_info.Device = g_Device;
@@ -488,7 +503,22 @@ int main(int, char **)
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-    // 创建 Taichi runtime、加载 AOT 计算图、构造 App（demo：默认参数，后续由 UI 调整）
+    // 创建 Taichi runtime：复用本 app 的 Vulkan device（方案 B 前提）。
+    // 这样 ti_export_vulkan_memory 导出的 VkBuffer 可以在本进程直接用于
+    // vkCmdCopyBufferToImage → ImGui 采样，全程无 CPU 回读。
+    TiVulkanRuntimeInteropInfo interop = {};
+    interop.get_instance_proc_addr = vkGetInstanceProcAddr;
+    interop.api_version = VK_API_VERSION_1_3;
+    interop.instance = g_Instance;
+    interop.physical_device = g_PhysicalDevice;
+    interop.device = g_Device;
+    interop.compute_queue = g_Queue; // compute 与 graphics 共用同一队列（前面已检查 compute bit）
+    interop.compute_queue_family_index = g_QueueFamily;
+    interop.graphics_queue = g_Queue;
+    interop.graphics_queue_family_index = g_QueueFamily;
+    ti::Runtime runtime(TI_ARCH_VULKAN, ti_import_vulkan_runtime(&interop), true);
+
+    // 加载 AOT 计算图、构造 App（demo：默认参数，后续由 UI 调整）
     PainterParams params = {};
     params.min_radius = 1.0f;
     params.max_radius = 30.0f;
@@ -510,13 +540,17 @@ int main(int, char **)
     params.hill_climb_rounds = 12;
     params.total_shapes = 2500;
 
-    ti::Runtime runtime(TI_ARCH_VULKAN);
     ti::AotModule aot = runtime.load_aot_module("graphs.tcm");
-    App app(window, runtime, params, aot);
 
-    // Main loop
-    while (!glfwWindowShouldClose(window))
+    // 嵌套作用域：App（worker 线程 + 显示纹理）必须在 Vulkan 清理之前析构。
+    // 否则 App 在 main 返回时才析构，而 CleanupVulkan() 已销毁 g_Device——
+    // join 中的 worker 线程和 DisplayTexture 析构会使用已销毁的 device（UB/崩溃）。
     {
+        App app(window, runtime, params, aot, g_PhysicalDevice, g_Device, g_Queue, g_QueueFamily);
+
+        // Main loop
+        while (!glfwWindowShouldClose(window))
+        {
         // Poll and handle events (inputs, window resize, etc.)
         // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your
         // inputs.
@@ -614,7 +648,8 @@ int main(int, char **)
         // Present Main Platform Window
         if (!main_is_minimized)
             FramePresent(wd);
-    }
+        }
+    } // ← App 在此析构（worker join + 纹理释放），此时 g_Device 仍然有效
 
     // Cleanup
     err = vkDeviceWaitIdle(g_Device);

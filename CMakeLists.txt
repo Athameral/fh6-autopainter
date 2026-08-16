@@ -46,6 +46,7 @@ set(IMGUI_SOURCES
 target_sources(my_app PRIVATE
     ${IMGUI_SOURCES}
     src/app/appui.cpp
+    src/app/displaytexture.cpp
     src/app/gpuworker.cpp
     src/app/injector.cpp
 )
