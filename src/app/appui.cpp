@@ -39,6 +39,7 @@ void App::renderControlPanel()
     {
         gpu_worker.should_exit = false;
         gpu_worker.launch_graph = true;
+gpu_worker.generate_interrupted = false;
         gpu_worker.launch_graph.notify_one();
     }
     if (ImGui::Button("Stop Worker"))
@@ -46,8 +47,8 @@ void App::renderControlPanel()
         // launch_graph 必须置 true + notify：worker 可能正沉睡在 launch_graph.wait(false)，
         // 设 false 无法唤醒它（wait 谓词要求值 != false）。置 true 唤醒后，循环顶部
         // 检查 should_exit 退出；run() 末尾会复位 launch_graph。
-        gpu_worker.should_exit = true;
-        gpu_worker.launch_graph = true;
+        gpu_worker.should_exit = false;
+        gpu_worker.launch_graph = false;
         gpu_worker.generate_interrupted = true;
         gpu_worker.launch_graph.notify_all();
         gpu_worker.gui_ack.notify_all(); // 万一 worker 卡在 gui_ack.wait，也唤醒它退出
