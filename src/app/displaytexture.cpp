@@ -39,7 +39,7 @@ bool DisplayTexture::create(VkPhysicalDevice physical_device, VkDevice device, V
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(device_, &ici, nullptr, &image_) != VK_SUCCESS)
     {
-        std::fprintf(stderr, "DisplayTexture: vkCreateImage failed\n");
+        spdlog::error("DisplayTexture: vkCreateImage failed");
         destroy();
         return false;
     }
@@ -53,7 +53,7 @@ bool DisplayTexture::create(VkPhysicalDevice physical_device, VkDevice device, V
     mai.memoryTypeIndex = findMemoryType(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mai.memoryTypeIndex == (uint32_t)-1 || vkAllocateMemory(device_, &mai, nullptr, &memory_) != VK_SUCCESS)
     {
-        std::fprintf(stderr, "DisplayTexture: vkAllocateMemory failed\n");
+        spdlog::error("DisplayTexture: vkAllocateMemory failed");
         destroy();
         return false;
     }
@@ -68,30 +68,19 @@ bool DisplayTexture::create(VkPhysicalDevice physical_device, VkDevice device, V
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (vkCreateImageView(device_, &vci, nullptr, &view_) != VK_SUCCESS)
     {
-        std::fprintf(stderr, "DisplayTexture: vkCreateImageView failed\n");
+        spdlog::error("DisplayTexture: vkCreateImageView failed");
         destroy();
         return false;
     }
 
-    // 4. 命令池（TRANSIENT：一次性命令；queueUpload 复用）
+    // 4. 命令池（TRANSIENT：一次性命令；uploadAndRegister 复用）
     VkCommandPoolCreateInfo cpci = {};
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     cpci.queueFamilyIndex = queue_family_;
     if (vkCreateCommandPool(device_, &cpci, nullptr, &pool_) != VK_SUCCESS)
     {
-        std::fprintf(stderr, "DisplayTexture: vkCreateCommandPool failed\n");
-        destroy();
-        return false;
-    }
-
-    // 5. 上传 fence（初始 SIGNALED：首次 queueUpload 的 wait 立即通过）
-    VkFenceCreateInfo fci = {};
-    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    if (vkCreateFence(device_, &fci, nullptr, &fence_) != VK_SUCCESS)
-    {
-        std::fprintf(stderr, "DisplayTexture: vkCreateFence failed\n");
+        spdlog::error("DisplayTexture: vkCreateCommandPool failed");
         destroy();
         return false;
     }
@@ -198,7 +187,7 @@ bool DisplayTexture::registerTexture()
     descriptor_ = ImGui_ImplVulkan_AddTexture(view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (descriptor_ == VK_NULL_HANDLE)
     {
-        std::fprintf(stderr, "DisplayTexture: ImGui_ImplVulkan_AddTexture failed\n");
+        spdlog::error("DisplayTexture: ImGui_ImplVulkan_AddTexture failed");
         return false;
     }
     return true;

@@ -128,7 +128,7 @@ void GPUWorker::run()
     while (!should_exit)
     {
         launch_graph.wait(false); // Wait until launch_graph is set to true
-        std::cerr << "GPUWorker: Starting generation loop..." << std::endl;
+        spdlog::debug("GPUWorker: Starting generation loop...");
 
         // set our params and buffers
         bind_graph_args();
@@ -146,7 +146,7 @@ void GPUWorker::run()
         // step 0. sharpen image, optional, can be done on CPU
         for (int step = 0; step < (int)params.total_shapes; ++step)
         {
-            std::cerr << "GPUWorker: Generating shape " << step + 1 << " of " << params.total_shapes << std::endl;
+            spdlog::debug("GPUWorker: Generating shape {} of {}", step + 1, params.total_shapes);
             if (generate_interrupted || should_exit)
             {
                 generate_interrupted = false;

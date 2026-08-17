@@ -17,6 +17,7 @@
 #include "imgui_impl_vulkan.h"
 #include <stdio.h>  // printf, fprintf
 #include <stdlib.h> // abort
+#include <spdlog/spdlog.h>
 #define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -62,13 +63,13 @@ static bool g_SwapChainRebuild = false;
 
 static void glfw_error_callback(int error, const char *description)
 {
-    fprintf(stderr, "GLFW Error %d: %s\n", error, description);
+    spdlog::error("GLFW Error {}: {}", error, description);
 }
 static void check_vk_result(VkResult err)
 {
     if (err == VK_SUCCESS)
         return;
-    fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
+    spdlog::error("[vulkan] Error: VkResult = {}", static_cast<int>(err));
     if (err < 0)
         abort();
 }
@@ -84,7 +85,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_report(VkDebugReportFlagsEXT flags, 
     (void)messageCode;
     (void)pUserData;
     (void)pLayerPrefix; // Unused arguments
-    fprintf(stderr, "[vulkan] Debug report from ObjectType: %i\nMessage: %s\n\n", objectType, pMessage);
+    spdlog::error("[vulkan] Debug report from ObjectType: {}\nMessage: {}", objectType, pMessage);
     return VK_FALSE;
 }
 #endif // APP_USE_VULKAN_DEBUG_REPORT
@@ -179,7 +180,13 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
     vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qf_count, qf_props.Data);
     if (!(qf_props[g_QueueFamily].queueFlags & VK_QUEUE_COMPUTE_BIT))
     {
-        fprintf(stderr, "[vulkan] Selected queue family lacks VK_QUEUE_COMPUTE_BIT; Taichi cannot run on it.\n");
+        spdlog::error("[vulkan] Selected queue family lacks VK_QUEUE_COMPUTE_BIT; Taichi cannot run on it.");
+        exit(-1);
+    }
+    if (qf_props[g_QueueFamily].queueCount < 2)
+    {
+        spdlog::error("[vulkan] Selected queue family has only {} queue(s); need >= 2 for dual-queue (graphics + compute).",
+                      qf_props[g_QueueFamily].queueCount);
         exit(-1);
     }
 
@@ -246,7 +253,7 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window *wd, VkSurfaceKHR surface
     vkGetPhysicalDeviceSurfaceSupportKHR(g_PhysicalDevice, g_QueueFamily, surface, &res);
     if (res != VK_TRUE)
     {
-        fprintf(stderr, "Error no WSI support on physical device 0\n");
+        spdlog::error("Error: no WSI support on physical device 0");
         exit(-1);
     }
 
@@ -400,7 +407,7 @@ int main(int, char **)
                                           "Dear ImGui GLFW+Vulkan example", nullptr, nullptr);
     if (!glfwVulkanSupported())
     {
-        printf("GLFW: Vulkan Not Supported\n");
+        spdlog::error("GLFW: Vulkan Not Supported");
         return 1;
     }
 

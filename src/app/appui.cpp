@@ -4,6 +4,7 @@
 
 #include "stb_image.h"
 
+#include <spdlog/spdlog.h>
 #include <future>
 #include <iostream>
 
@@ -60,15 +61,41 @@ void App::renderTargetPanel()
     ImGui::Text("Target Image: %s", target_image_path.c_str());
     if (target_image_path != old_target_image_path)
     {
+        spdlog::debug(
+                  "[image] change detected, before loading: path='{}', old_path='{}', thread={}",
+                      target_image_path, old_target_image_path,
+                      std::hash<std::thread::id>{}(std::this_thread::get_id()));
         target_image_ready = false;
         old_target_image_path = target_image_path;
         // load image（async 线程只做 CPU 数据准备 + 写 Taichi buffer）
         int img_w, img_h;
         auto fut = std::async(std::launch::async, [&]() {
+            spdlog::debug("[image] load begin: path='{}', thread={}", target_image_path,
+                          std::hash<std::thread::id>{}(std::this_thread::get_id()));
             auto *data = stbi_loadf(target_image_path.c_str(), &img_w, &img_h, nullptr, 4);
+            spdlog::debug(
+                              "[image] stbi_loadf returned: data={}, width={}, height={}, failure_reason='{}'",
+                          static_cast<const void *>(data), img_w, img_h,
+                          stbi_failure_reason() ? stbi_failure_reason() : "none");
+
+            if (!data || img_w <= 0 || img_h <= 0)
+            {
+                spdlog::error(
+                                  "[image] load failed: path='{}', data={}, width={}, height={}",
+                              target_image_path, static_cast<const void *>(data), img_w, img_h);
+                if (data)
+                    stbi_image_free(data);
+                target_image_ready = false;
+                return;
+            }
+
+            spdlog::debug(
+                              "[image] load succeeded, before GPU buffer rebuild: width={}, height={}",
+                          img_w, img_h);
             gpu_worker.params.canvas_h = img_h;
             gpu_worker.params.canvas_w = img_w;
             gpu_worker.remakeBuffer();
+            spdlog::debug("[image] GPU buffers rebuilt");
             std::vector<float> target_rgb(img_w * img_h * 3);
             std::vector<int32_t> target_alpha(img_w * img_h);
             if (data)
@@ -82,25 +109,41 @@ void App::renderTargetPanel()
                 }
                 gpu_worker.gpu_buffer.target_origin.write(target_rgb.data(), target_rgb.size());
                 gpu_worker.gpu_buffer.valid_mask.write(target_alpha.data(), target_alpha.size());
+mask_staging.copy_to(gpu_worker.gpu_buffer.valid_mask);
+
+                // copy_to 是异步提交；staging 是局部对象，必须等 GPU 完成后才能析构。
+                spdlog::debug("[image] target buffers uploaded, before runtime.wait()");
+                runtime.wait();
+                spdlog::debug("[image] runtime.wait() completed");
                 stbi_image_free(data);
+spdlog::debug("[image] decoded image memory freed");
             }
             else
             {
-                std::cerr << "Failed to load image: " << target_image_path << std::endl;
+                spdlog::error("Failed to load image: " << target_image_path << std::endl;
             }
             // end
             target_image_ready = true;
+            spdlog::debug("[image] load pipeline completed: target_image_ready=true");
         });
     }
 
     // 主线程：图片加载完成后，创建/重建显示纹理并上传 target（一次性）
     if (target_image_ready.exchange(false))
     {
+        spdlog::debug(
+                  "[image] main thread observed ready=true, before display texture upload, thread={}",
+                      std::hash<std::thread::id>{}(std::this_thread::get_id()));
         ensureDisplayTextures();
+        spdlog::debug(
+                  "[image] display textures ensured: canvas={}x{}, target={}x{}",
+                      canvas_tex.width(), canvas_tex.height(), target_tex.width(), target_tex.height());
         target_tex.uploadAndRegister(gpu_worker.gpu_buffer.target_origin, runtime);
-        std::cerr << "[main] target uploaded, target_desc=" << (void *)target_tex.descriptor()
-                  << " canvas_desc=" << (void *)canvas_tex.descriptor()
-                  << " canvas_valid=" << canvas_tex.is_valid() << std::endl;
+        spdlog::debug("[image] target display texture upload completed");
+        spdlog::debug(
+                  "[main] target uploaded, target_desc={}, canvas_desc={}, canvas_valid={}",
+                      static_cast<void *>(target_tex.descriptor()), static_cast<void *>(canvas_tex.descriptor()),
+                      canvas_tex.is_valid());
     }
 
     if (target_tex.descriptor() != VK_NULL_HANDLE)
@@ -148,11 +191,11 @@ App::App(GLFWwindow *window, ti::Runtime &runtime, const PainterParams &params, 
       gpu_worker(runtime, params, aot_module), vk_physical_device(physical_device), vk_device(device), vk_queue(queue),
       vk_queue_family(queue_family)
 {
-    // 让 worker 线程每步把最新 canvas 刷到显示纹理（worker 此刻阻塞在 launch_graph.wait，
-    // 首次读取发生在用户点 Start 之后；换图必须先停 worker，指针此后不再变化）
-    gpu_worker.canvas_display = &canvas_tex;
+    // canvas 的显示走 target 同款路径：worker 每步置 canvas_ready，主线程
+    // renderUI 消费并 uploadAndRegister 同步上传（见 renderTargetPanel），
+    // 不再需要 worker 直接持有显示纹理指针。
 
-    std::cout << "App initialized with GPUWorker." << std::endl;
+    spdlog::info("App initialized with GPUWorker.");
     glfwSetWindowUserPointer(window, this);
     glfwSetDropCallback(window, file_dragin_callback);
 }
@@ -174,7 +217,7 @@ void file_dragin_callback(GLFWwindow *window, int count, const char **paths)
     assert(window != nullptr);
     if (count > 1)
     {
-        std::cerr << "Only one file can be dragged in at a time." << std::endl;
+        spdlog::warn("Only one file can be dragged in at a time.");
         return;
     }
     assert(count == 1);

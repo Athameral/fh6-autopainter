@@ -32,6 +32,13 @@ add_compile_options(-ffunction-sections -fdata-sections) # 减小体积
 # 2. 引入 3rd/taichi 子目录
 add_subdirectory(3rd/taichi)
 
+# Taichi 自带的 spdlog：应用层日志使用 header-only 模式，避免额外链接库。
+add_library(app_spdlog INTERFACE)
+target_include_directories(app_spdlog INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/external/spdlog/include
+)
+target_compile_definitions(app_spdlog INTERFACE SPDLOG_USE_STD_FORMAT)
+
 # # 3. 将前面用 llvm-objcopy 转好的 AOT 字节码对象文件打成一个静态资源库
 # add_library(aot_assets STATIC metadata.o patch0.o)
 # set_target_properties(aot_assets PROPERTIES LINKER_LANGUAGE CXX)
@@ -86,6 +93,7 @@ target_include_directories(my_app PRIVATE
 #   main.cpp 自身的 vkCreateInstance 等直接调用仍会报未定义符号）。
 target_compile_definitions(my_app PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
 target_link_libraries(my_app PRIVATE glfw )
+target_link_libraries(my_app PRIVATE app_spdlog)
 
 
 # # 5. 包含 Taichi C/C++ API 的头文件路径（external/include 提供 stb 单头文件库）
