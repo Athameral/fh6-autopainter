@@ -13,16 +13,16 @@
 PainterGPUBuffer::PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &params)
     : runtime(runtime)
 {
-    canvas = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, true);
+    canvas = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, false);
     target = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, false);
-    target_origin = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, true);
+    target_origin = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, false);
     error_field = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {}, false);
     error_field_buffer = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {}, false);
     sampled_pixels = runtime.allocate_ndarray<float>({(uint32_t)params.random_samples}, {2}, false);
     hist_buffer = runtime.allocate_ndarray<int32_t>({(uint32_t)params.sample_bins}, {}, false);
-    valid_mask = runtime.allocate_ndarray<int32_t>({params.canvas_h, params.canvas_w}, {}, true);
-    valid_pixels = runtime.allocate_ndarray<int32_t>({params.canvas_h * params.canvas_w}, {2}, false);
-    valid_n_pixels = runtime.allocate_ndarray<int32_t>({1}, {}, false);
+    valid_mask = runtime.allocate_ndarray<int32_t>({params.canvas_h, params.canvas_w}, {}, false);
+    valid_pixels = runtime.allocate_ndarray<int32_t>({params.canvas_h * params.canvas_w}, {2}, true);
+    valid_n_pixels = runtime.allocate_ndarray<int32_t>({1}, {}, true);
     best_ellipse = runtime.allocate_ndarray<float>({1}, {6}, true);
     best_ycbcr = runtime.allocate_ndarray<float>({1}, {3}, true);
     best_score = runtime.allocate_ndarray<float>({1}, {}, true);
