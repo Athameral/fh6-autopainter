@@ -5,6 +5,16 @@ project(my_taichi_app CXX C)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 在顶层 CMakeLists.txt 同级查找 AOT 模块，并把路径传给 C++ 汇编代码。
+file(GLOB GRAPH_TCM_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/graphs.tcm"
+)
+if(NOT GRAPH_TCM_FILES)
+    message(FATAL_ERROR "graphs.tcm not found next to the top-level CMakeLists.txt, try export it first.")
+endif()
+list(GET GRAPH_TCM_FILES 0 GRAPH_TCM_FILE)
+file(TO_CMAKE_PATH "${GRAPH_TCM_FILE}" GRAPH_TCM_FILE)
+
 # 1. 强制控制子模块 Taichi 编译为静态库，且只编译 C-API
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(TI_WITH_C_API ON CACHE BOOL "" FORCE)
@@ -29,6 +39,7 @@ add_subdirectory(3rd/taichi)
 # 4. 主程序 Target（stb_impl.cpp 提供 stb_image/stb_image_write 实现）
 add_executable(my_app src/app/main.cpp)
 add_executable(test_app src/app/test.cpp)
+target_compile_definitions(my_app PRIVATE "GRAPH_TCM_PATH=\"${GRAPH_TCM_FILE}\"")
 
 # imgui
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd/imgui)
