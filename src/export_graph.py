@@ -2,7 +2,7 @@ import taichi as ti
 
 from kernels.evaluate import generate_and_pick_best, mutate_and_pick_best
 from kernels.render import apply_ellipse
-from kernels.sampling import compute_error_field, sample_from_error_topk
+from kernels.sampling import compute_error_field, sample_from_error_topk, build_valid_pixels_from_mask
 from kernels.sharpening import sharpen_kernel
 
 # buffers
@@ -50,6 +50,12 @@ ti.init(arch=ti.vulkan)
 gb0 = ti.graph.GraphBuilder()
 gb0.dispatch(sharpen_kernel, target_origin, target, SHARPEN_INTENSITY)
 
+# g_m：一次性构建 valid 像素列表（target 不变 → valid_mask 不变 → 列表不变）。
+# 在生成循环开始前执行一次即可，不用放进 g1 循环。
+# 漏掉它 → valid_pixels/valid_n_pixels 是未初始化垃圾 → 采样坐标全错 → score=0 → canvas 全黑。
+gbm = ti.graph.GraphBuilder()
+gbm.dispatch(build_valid_pixels_from_mask, valid_mask, valid_pixels, valid_n_pixels)
+
 gb1 = ti.graph.GraphBuilder()
 gb1.dispatch(compute_error_field, canvas, target, valid_mask,
              error_field, error_field_buffer, BLUR_SIZE)
@@ -71,12 +77,14 @@ gb3 = ti.graph.GraphBuilder()
 gb3.dispatch(apply_ellipse, best_ellipse, best_ycbcr, canvas)
 
 g0 = gb0.compile()
+gm = gbm.compile()
 g1 = gb1.compile()
 g2 = gb2.compile()
 g3 = gb3.compile()
 
 mod = ti.aot.Module(ti.vulkan)
 mod.add_graph("g0", g0)
+mod.add_graph("g_m", gm)
 mod.add_graph("g1", g1)
 mod.add_graph("g2", g2)
 mod.add_graph("g3", g3)

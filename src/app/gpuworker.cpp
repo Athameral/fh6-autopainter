@@ -3,6 +3,7 @@
 #include <thread>
 #include <vector>
 
+#include <spdlog/spdlog.h>
 #include <taichi/cpp/taichi.hpp>
 #include <utility>
 
@@ -56,6 +57,7 @@ GPUWorker::GPUWorker(ti::Runtime &runtime, const PainterParams &params, const ti
       generate_interrupted(false), launch_graph(false), gui_ack(false)
 {
     // g0 = aot_module.get_compute_graph("g0");
+    g_m = aot_module.get_compute_graph("g_m");
     g1 = aot_module.get_compute_graph("g1");
     g2 = aot_module.get_compute_graph("g2");
     g3 = aot_module.get_compute_graph("g3");
@@ -70,9 +72,14 @@ GPUWorker::~GPUWorker()
         worker_thread.join();
 }
 
-// 绑定全部 graph 参数（与 src/export_graph.py 的 g0~g3 一一对应）
+// 绑定全部 graph 参数（与 src/export_graph.py 的 g_m/g0~g3 一一对应）
 void GPUWorker::bind_graph_args()
     {
+        // g_m: 一次性构建 valid 像素列表（target 不变 → 只执行一次）
+        g_m["valid_mask"] = gpu_buffer.valid_mask;
+        g_m["valid_pixels"] = gpu_buffer.valid_pixels;
+        g_m["valid_n_pixels"] = gpu_buffer.valid_n_pixels;
+
         // g0: 锐化目标图（主循环前一次）
         g0["target_origin"] = gpu_buffer.target_origin;
         g0["target"] = gpu_buffer.target;
@@ -133,14 +140,22 @@ void GPUWorker::run()
         // set our params and buffers
         bind_graph_args();
 
-        // 首次运行（或 buffer 重建后）：清空 canvas。
-        // write() 走 staging 异步提交，拷贝命令在同队列 FIFO 排在 g1 之前，天然正确。
-        if (!canvas_cleared)
+        // g_m：构建 valid 像素列表（valid_pixels/valid_n_pixels）。
+        // target 不变 → 列表不变，每次 Start 执行一次即可（remakeBuffer 重建 buffer
+        // 后需要重新构建，故放在这里而非构造函数）。同队列 FIFO，先于 g1 执行。
+        g_m.launch();
+        // runtime.wait(); // 调试：等 g_m 完成以便读回验证
+
+        // 【调试探针】读回 valid 相关 buffer，验证 g_m 是否填充了 valid_pixels。
+        if (false)
         {
-            std::vector<float> zeros((size_t)params.canvas_w * params.canvas_h * 3, 0.0f);
-            gpu_buffer.canvas.write(zeros.data(), zeros.size());
-            canvas_cleared = true;
-            std::cerr << "GPUWorker: canvas cleared (" << params.canvas_w << "x" << params.canvas_h << ")" << std::endl;
+            int32_t n_valid = 0;
+            gpu_buffer.valid_n_pixels.read(&n_valid, 1);
+            std::vector<int32_t> vp(6);
+            gpu_buffer.valid_pixels.read(vp.data(), vp.size());
+            spdlog::debug(
+                          "[dbg] g_m: valid_n_pixels={} first_px=({}, {}) ({}, {}) ({}, {})",
+                          n_valid, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5]);
         }
 
         // step 0. sharpen image, optional, can be done on CPU
@@ -168,27 +183,54 @@ void GPUWorker::run()
             // and write results to buffer, wait for reading.
             g3.launch();
 
-            // 注意：worker 线程【绝不能】调 runtime.wait()（= vkQueueWaitIdle 等整条队列排空）。
-            // 主线程每帧都向同一条队列提交 ImGui 渲染命令，队列永远排不空 → worker 被卡死。
-            // 清理 Taichi 内部 submitted_cmdbuffers_（fence/semaphore 泄漏）的责任由主线程承担：
-            // 主线程每帧渲染前调 runtime.wait()，它本来就在等 vsync，多等 worker 命令无感，
-            // 且 worker 此时阻塞在 gui_ack.wait 上（不会提交新命令），队列稳定，wait 不卡。
-            //（原来每 50 步 wait 的方案废弃：仍会被主线程渲染拖住）
+            // 【双队列】worker 独占 q1（compute queue）：runtime.wait() 只排空
+            // 自己队列的命令（kernel + staging 拷贝），不被主线程 q0 的渲染拖住；
+            // 同时回收 Taichi 内部 submitted_cmdbuffers_（fence/semaphore 泄漏根治）。
+            // wait 返回 = q1 全部完成 = canvas 写入对后续 host 提交可见（fence 语义），
+            // 主线程拿到 canvas_ready 后在 q0 拷贝/渲染即安全，无需额外 GPU 同步。
+            runtime.wait();
 
-            // 把最新 canvas 拷到显示纹理：同一队列，拷贝排在 kernel 之后、主线程
-            // ImGui 渲染之前，无额外同步开销（同队列 FIFO 天然有序）。
-            if (canvas_display)
+            // 【调试探针】每步读回全部关键 buffer，确认数据链路哪一环断了。
+            // 所有 ndarray 已临时设 host accessible，runtime.wait() 后可直接 read。
+            if (false)
             {
-                canvas_display->queueUpload(gpu_buffer.canvas, runtime);
+                const uint32_t W = params.canvas_w, H = params.canvas_h;
+                std::vector<float> canvas_cpu(gpu_buffer.canvas.scalar_count());
+                gpu_buffer.canvas.read(canvas_cpu);
+                auto px = [&](uint32_t x, uint32_t y) {
+                    const size_t i = ((size_t)y * W + x) * 3;
+                    return canvas_cpu[i];
+                };
+                float score = 0.0f;
+                gpu_buffer.best_score.read(&score, 1);
+                std::vector<float> ell(6), ycc(3), sp(6), ef(16);
+                gpu_buffer.best_ellipse.read(ell.data(), 6);
+                gpu_buffer.best_ycbcr.read(ycc.data(), 3);
+                gpu_buffer.sampled_pixels.read(sp.data(), 6);
+                gpu_buffer.error_field.read(ef.data(), 16);
+                float ef_min = 1e30f, ef_max = -1e30f;
+                for (float v : ef) {
+                    if (v < ef_min) ef_min = v;
+                    if (v > ef_max) ef_max = v;
+                }
+                spdlog::debug(
+                        "[dbg] step {} score={} ell=({}, {}, {}, {}, {}, {}) ycc=({}, {}, {}) sp0=({}, {}) "
+                        "sp1=({}, {}) ef[0..15]min={} max={} center=({}, {}, {}) corners=({}, {}, {}, {})",
+                    step, score, ell[0], ell[1], ell[2], ell[3], ell[4], ell[5], ycc[0], ycc[1], ycc[2], sp[0],
+                    sp[1], sp[2], sp[3], ef_min, ef_max, px(W / 2, H / 2), px(W / 2 + 1, H / 2),
+                    px(W / 2, H / 2 + 1), px(0, 0), px(W - 1, 0), px(0, H - 1), px(W - 1, H - 1));
             }
-            else
-            {
-                std::cerr << "GPUWorker: canvas_display is null, skipping upload" << std::endl;
-            }
+            gui_ack = false;
+
+            // 通知主线程：canvas 已更新。主线程（renderUI）消费后会用
+            // uploadAndRegister 同步上传到显示纹理（target 同款路径，见 appui.cpp）。
+            // 随后主线程置 gui_ack 才放行下一轮——因此下一次 g1 必然发生在
+            // 本次上传完成之后，g3 写 canvas 与上传拷贝不存在竞争。
+            canvas_ready = true;
+            canvas_ready.notify_all();
 
             // TODO: write ellipse to buffer and let gui read
             //（best_* read 已移到主线程 wait 之后，避免 host/device 竞争）
-            gui_ack = false;
             gui_ack.wait(false); // Wait for GUI to acknowledge that it has processed the results
         }
 
@@ -208,5 +250,4 @@ void GPUWorker::remakeBuffer()
 {
     gpu_buffer = PainterGPUBuffer(runtime, params);
     bind_graph_args();
-    canvas_cleared = false; // 新 buffer 需要重新清零
 }

@@ -7,11 +7,11 @@
 // 拷进 VkImage，并注册成 ImGui 可采样的 VkDescriptorSet。
 //
 // 线程约定：
-//  - create() / destroy() / registerTexture() / upload() 必须在主线程调用
+//  - create() / destroy() / registerTexture() / uploadAndRegister() 必须在主线程调用
 //    （涉及 ImGui_ImplVulkan_AddTexture 与 descriptor 分配）。
-//  - queueUpload() 设计为 worker 线程调用：只录制命令 + vkQueueSubmit（无 fence），
-//    依赖"与 Taichi 共享同一队列 + 调用方每步 runtime.wait()"保证拷贝先于下一次复用完成。
-//  - 同一实例不要混用 upload() 与 queueUpload()（两者共用 command pool）。
+//  - uploadAndRegister() 是当前唯一上传路径（target 与 canvas 共用）：内部
+//    runtime.wait() + 同步拷贝 + fence 等待，适合静态图（target）与主线程驱动的
+//    动态图（canvas 每步由 worker 置 canvas_ready、主线程消费后调用）。
 class DisplayTexture
 {
   public:
@@ -29,14 +29,9 @@ class DisplayTexture
     // 适合静态图（target）：图片加载完成后调用一次。
     bool uploadAndRegister(const ti::NdArray<float> &src, ti::Runtime &runtime);
 
-    // 主线程：仅注册 ImGui 纹理（不拷贝数据）。适合动态图（canvas）——
-    // create() 后调用一次，内容由 queueUpload 持续刷新。
+    // 主线程：仅注册 ImGui 纹理（不拷贝数据）。create() 后调用一次，
+    // 内容由 uploadAndRegister 持续刷新（canvas 的动态更新路径）。
     bool registerTexture();
-
-    // worker 线程：录制拷贝命令并提交。内部用持久 fence 等待上一次拷贝完成后
-    // 才 reset 命令池（防止 reset 仍在执行的命令缓冲 → DEVICE_LOST），
-    // 因此可以安全地每步调用，无需调用方先 runtime.wait()。
-    void queueUpload(const ti::NdArray<float> &src, ti::Runtime &runtime);
 
     VkDescriptorSet descriptor() const { return descriptor_; }
     uint32_t width() const { return w_; }
@@ -57,7 +52,10 @@ class DisplayTexture
     VkImageView view_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_ = VK_NULL_HANDLE;
     VkCommandPool pool_ = VK_NULL_HANDLE;
-    VkFence fence_ = VK_NULL_HANDLE; // queueUpload 同步：等上次拷贝完成后再 reset pool
+
+    // The image is sampled between uploads, so subsequent copies must transition
+    // from SHADER_READ_ONLY_OPTIMAL rather than always pretending it is UNDEFINED.
+    VkImageLayout current_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 
     uint32_t w_ = 0, h_ = 0;
     VkFormat format_ = VK_FORMAT_UNDEFINED;

@@ -28,7 +28,8 @@ class App
     const ti::AotModule &aot_module;
     PainterParams params;
 
-    // 显示纹理（方案 B）：canvas 每步由 worker 线程 queueUpload；target 加载后主线程 uploadAndRegister。
+    // 显示纹理：canvas 与 target 均走 uploadAndRegister（主线程同步上传，target 同款路径）。
+    // canvas 由 worker 每步置 canvas_ready 通知后主线程消费上传；target 加载后上传一次。
     // 注意声明顺序：canvas_tex 先于 gpu_worker 声明 → 析构时 gpu_worker（join 线程）先析构，纹理后释放。
     DisplayTexture canvas_tex;
     DisplayTexture target_tex;
@@ -46,6 +47,7 @@ class App
 
     void renderControlPanel();
     void renderTargetPanel();
+    void renderCanvasPanel();
     // 主线程：按需创建/重建两张显示纹理（图片加载/尺寸变化时调用一次）
     void ensureDisplayTextures();
 };

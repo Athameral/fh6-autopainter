@@ -29,9 +29,9 @@
 #include <volk.h>
 #endif
 
+#include "aot_module.h"
 #include "appui.h"
 #include <taichi/taichi_vulkan.h> // ti_import_vulkan_runtime / ti_export_vulkan_memory 等互操作接口
-
 
 // [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and
 // compatibility with old VS compilers. To link with VS2010-era libraries, VS2015+ requires linking with
@@ -53,7 +53,8 @@ static VkInstance g_Instance = VK_NULL_HANDLE;
 static VkPhysicalDevice g_PhysicalDevice = VK_NULL_HANDLE;
 static VkDevice g_Device = VK_NULL_HANDLE;
 static uint32_t g_QueueFamily = (uint32_t)-1;
-static VkQueue g_Queue = VK_NULL_HANDLE;
+static VkQueue g_Queue = VK_NULL_HANDLE;         // q0：graphics/present（主线程渲染 + 显示纹理拷贝）
+static VkQueue g_ComputeQueue = VK_NULL_HANDLE;  // q1：compute（Taichi worker 独占）
 static VkPipelineCache g_PipelineCache = VK_NULL_HANDLE;
 static VkDescriptorPool g_DescriptorPool = VK_NULL_HANDLE;
 
@@ -170,9 +171,10 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
     g_QueueFamily = ImGui_ImplVulkanH_SelectQueueFamilyIndex(g_PhysicalDevice);
     IM_ASSERT(g_QueueFamily != (uint32_t)-1);
 
-    // Taichi 的 compute 提交需要 VK_QUEUE_COMPUTE_BIT。
-    // 我们让 Taichi 与 ImGui 共用同一个队列（现代桌面 GPU 的 graphics 队列族通常带 compute bit），
-    // 这样 kernel 提交与拷贝/渲染命令天然按提交顺序串行，无需额外同步。
+    // 双队列方案：从 graphics 队列族申请 2 个 queue——
+    //   q0 = graphics/present（主线程渲染、显示纹理拷贝）
+    //   q1 = compute（Taichi worker 独占：kernel 提交 + staging 拷贝）
+    // 队列族必须带 COMPUTE_BIT（Taichi 提交需要），且 queueCount >= 2。
     uint32_t qf_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &qf_count, nullptr);
     ImVector<VkQueueFamilyProperties> qf_props;
@@ -190,7 +192,7 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
         exit(-1);
     }
 
-    // Create Logical Device (with 1 queue)
+    // Create Logical Device (with 2 queues: q0 graphics, q1 compute)
     {
         ImVector<const char *> device_extensions;
         device_extensions.push_back("VK_KHR_swapchain");
@@ -206,11 +208,11 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
             device_extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
 #endif
 
-        const float queue_priority[] = {1.0f};
+        const float queue_priority[] = {1.0f, 1.0f};
         VkDeviceQueueCreateInfo queue_info[1] = {};
         queue_info[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_info[0].queueFamilyIndex = g_QueueFamily;
-        queue_info[0].queueCount = 1;
+        queue_info[0].queueCount = 2;
         queue_info[0].pQueuePriorities = queue_priority;
         VkDeviceCreateInfo create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -220,7 +222,8 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
         create_info.ppEnabledExtensionNames = device_extensions.Data;
         err = vkCreateDevice(g_PhysicalDevice, &create_info, g_Allocator, &g_Device);
         check_vk_result(err);
-        vkGetDeviceQueue(g_Device, g_QueueFamily, 0, &g_Queue);
+        vkGetDeviceQueue(g_Device, g_QueueFamily, 0, &g_Queue);        // q0：渲染/拷贝
+        vkGetDeviceQueue(g_Device, g_QueueFamily, 1, &g_ComputeQueue); // q1：Taichi compute
     }
 
     // Create Descriptor Pool
@@ -519,7 +522,12 @@ int main(int, char **)
     interop.instance = g_Instance;
     interop.physical_device = g_PhysicalDevice;
     interop.device = g_Device;
-    interop.compute_queue = g_Queue; // compute 与 graphics 共用同一队列（前面已检查 compute bit）
+    // 双队列：Taichi kernel/staging 全部提交到 q1（compute，worker 独占）；
+    // 主线程渲染与显示纹理拷贝走 q0。
+    // 跨队列同步靠 CPU 侧握手：worker 每步 runtime.wait() 排空 q1 后才通知主线程拷贝；
+    // fence wait 的第二同步范围包含 wait 之后 host 的 vkQueueSubmit（无论哪个队列），
+    // 因此 q0 上发起的拷贝必然看见 q1 kernel 的全部写入——无需 timeline semaphore。
+    interop.compute_queue = g_ComputeQueue;
     interop.compute_queue_family_index = g_QueueFamily;
     interop.graphics_queue = g_Queue;
     interop.graphics_queue_family_index = g_QueueFamily;
@@ -543,11 +551,12 @@ int main(int, char **)
     params.radius_step = 6.0f;
     params.theta_step_rad = 0.523599f;
     params.alpha_step = 0.15f;
-    params.sample_step = 1;
+    params.sample_step = 4;
     params.hill_climb_rounds = 12;
     params.total_shapes = 2500;
 
-    ti::AotModule aot = runtime.load_aot_module("graphs.tcm");
+    // ti::AotModule aot = runtime.load_aot_module("graphs.tcm");
+    ti::AotModule aot = runtime.create_aot_module(g_graphs_tcm_start, g_graphs_tcm_end - g_graphs_tcm_start);
 
     // 嵌套作用域：App（worker 线程 + 显示纹理）必须在 Vulkan 清理之前析构。
     // 否则 App 在 main 返回时才析构，而 CleanupVulkan() 已销毁 g_Device——

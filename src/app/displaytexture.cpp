@@ -3,7 +3,7 @@
 #include "imgui_impl_vulkan.h" // ImGui_ImplVulkan_AddTexture / RemoveTexture
 #include <taichi/taichi_vulkan.h> // ti_export_vulkan_memory
 
-#include <cstdio>
+#include <spdlog/spdlog.h>
 
 DisplayTexture::~DisplayTexture()
 {
@@ -21,6 +21,7 @@ bool DisplayTexture::create(VkPhysicalDevice physical_device, VkDevice device, V
     device_ = device;
     queue_ = queue;
     queue_family_ = queue_family;
+    current_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     w_ = w;
     h_ = h;
     format_ = format;
@@ -105,11 +106,6 @@ void DisplayTexture::destroy()
         vkDestroyCommandPool(device_, pool_, nullptr);
         pool_ = VK_NULL_HANDLE;
     }
-    if (fence_ != VK_NULL_HANDLE)
-    {
-        vkDestroyFence(device_, fence_, nullptr);
-        fence_ = VK_NULL_HANDLE;
-    }
     if (view_ != VK_NULL_HANDLE)
     {
         vkDestroyImageView(device_, view_, nullptr);
@@ -127,6 +123,7 @@ void DisplayTexture::destroy()
     }
     w_ = h_ = 0;
     format_ = VK_FORMAT_UNDEFINED;
+    current_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 bool DisplayTexture::uploadAndRegister(const ti::NdArray<float> &src, ti::Runtime &runtime)
@@ -136,7 +133,7 @@ bool DisplayTexture::uploadAndRegister(const ti::NdArray<float> &src, ti::Runtim
 
     // NdArray.write() 是 ti_map_memory + memcpy（走 staging，异步提交），
     // 必须等队列执行完，GPU 侧 buffer 内容才可见。
-    runtime.wait();
+    // runtime.wait();
 
     // 导出 Taichi buffer 的底层 VkBuffer（同一 device，直接可用）
     TiVulkanMemoryInteropInfo mem_info = {};
@@ -168,10 +165,23 @@ bool DisplayTexture::uploadAndRegister(const ti::NdArray<float> &src, ti::Runtim
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
-    // 与 Taichi 同一队列：kernel 已由 runtime.wait() 同步完成，拷贝按序执行
-    vkQueueSubmit(queue_, 1, &si, fence);
-    vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
+    // 双队列：kernel 在 q1（compute），拷贝提交到 q0（graphics）。
+    // 跨队列可见性由上面的 runtime.wait()（等 q1 排空）保证——fence wait 的
+    // 第二同步范围包含 wait 之后 host 的 vkQueueSubmit，因此本拷贝必然看见
+    // kernel 的全部写入，无需 semaphore。
+    VkResult result = vkQueueSubmit(queue_, 1, &si, fence);
+    if (result != VK_SUCCESS)
+    {
+        vkDestroyFence(device_, fence, nullptr);
+        return false;
+    }
+
+    result = vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(device_, fence, nullptr);
+    if (result != VK_SUCCESS)
+        return false;
+
+    current_layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // 注册到 ImGui（消耗 1 个 SAMPLED_IMAGE + 1 个 SAMPLER descriptor）
     return registerTexture();
@@ -193,48 +203,6 @@ bool DisplayTexture::registerTexture()
     return true;
 }
 
-void DisplayTexture::queueUpload(const ti::NdArray<float> &src, ti::Runtime &runtime)
-{
-    if (image_ == VK_NULL_HANDLE || device_ == VK_NULL_HANDLE)
-    {
-        std::fprintf(stderr, "DisplayTexture::queueUpload: texture not created, skipping\n");
-        return;
-    }
-
-    // 等上一次拷贝完成再复位 pool：避免 reset 仍在 GPU 上执行的命令缓冲
-    // （VK_ERROR_DEVICE_LOST 根源）。同队列 FIFO → 也保证此前的 kernel 全部完成。
-    vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX);
-    vkResetFences(device_, 1, &fence_);
-
-    TiVulkanMemoryInteropInfo mem_info = {};
-    ti_export_vulkan_memory(runtime, src.memory().memory(), &mem_info);
-
-    vkResetCommandPool(device_, pool_, 0);
-    VkCommandBufferAllocateInfo cbai = {};
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = pool_;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(device_, &cbai, &cmd);
-
-    VkCommandBufferBeginInfo cbbi = {};
-    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &cbbi);
-    recordCopy(cmd, mem_info.buffer);
-    vkEndCommandBuffer(cmd);
-
-    // 挂上传 fence：下次 queueUpload 先等它，保证本拷贝完成后才 reset pool。
-    // 同一队列上，本拷贝排在 Taichi kernel 之后、主线程 ImGui 渲染之前，
-    // GPU 按提交顺序执行，天然正确。
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    vkQueueSubmit(queue_, 1, &si, fence_);
-}
-
 void DisplayTexture::recordCopy(VkCommandBuffer cmd, VkBuffer src)
 {
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -242,16 +210,18 @@ void DisplayTexture::recordCopy(VkCommandBuffer cmd, VkBuffer src)
     // 1. UNDEFINED → TRANSFER_DST（内容不保留，整图覆盖）
     VkImageMemoryBarrier to_dst = {};
     to_dst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_dst.oldLayout = current_layout_;
     to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_dst.image = image_;
     to_dst.subresourceRange = range;
-    to_dst.srcAccessMask = 0;
+    to_dst.srcAccessMask = current_layout_ == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT;
     to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &to_dst);
+    const VkPipelineStageFlags src_stage =
+        current_layout_ == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                                      : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    vkCmdPipelineBarrier(cmd, src_stage, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_dst);
 
     // 2. 拷贝（buffer 是紧密 float[3] = 12B/px；image 是 RGBA32F = 16B/px。
     //    bufferRowLength = w 让驱动按 12B stride 读 buffer、写 16B stride image）

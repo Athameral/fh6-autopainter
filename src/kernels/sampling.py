@@ -30,6 +30,27 @@ def build_valid_pixels_and_mask(
             out_valid_pixels[idx][1] = I[0]  # y
     out_n_valid_pixels[0] = valid_count
 
+
+@ti.kernel
+def build_valid_pixels_from_mask(
+    mask: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    out_valid_pixels: ti.types.ndarray(dtype=ti.types.vector(2, ti.i32), ndim=1),
+    out_n_valid_pixels: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    """Build the valid-pixel list from an int32 mask (1=valid, 0=invalid).
+
+    C++ app 只有 int32 valid_mask（没有 alpha float buffer）。
+    由 g_m 在生成循环开始前执行一次（target 不变 → valid 列表不变），
+    否则 valid_pixels/valid_n_pixels 是未初始化垃圾 → 采样坐标全错 → score=0。
+    """
+    valid_count = 0
+    for I in ti.grouped(mask):
+        if mask[I] == 1:
+            idx = ti.atomic_add(valid_count, 1)
+            out_valid_pixels[idx][0] = I[1]  # x
+            out_valid_pixels[idx][1] = I[0]  # y
+    out_n_valid_pixels[0] = valid_count
+
 @ti.kernel
 def compute_error_field(canvas: ti.types.ndarray(dtype=tm.vec3, ndim=2),
                         target: ti.types.ndarray(dtype=tm.vec3, ndim=2),

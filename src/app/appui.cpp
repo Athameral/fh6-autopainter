@@ -6,18 +6,18 @@
 
 #include <spdlog/spdlog.h>
 #include <future>
-#include <iostream>
+#include <thread>
 
 
 void App::renderUI()
 {
     renderControlPanel();
     renderTargetPanel();
+    renderCanvasPanel();
 
     // 【关键】Taichi 内部资源清理（submitted_cmdbuffers_ 的 fence/semaphore 只有
-    // wait_idle 才释放）。worker 线程不能 wait（会被主线程渲染命令拖住），
-    // 所以由主线程每帧 wait：此时 worker 阻塞在 gui_ack.wait 上不会提交新命令，
-    // 队列稳定，wait 只等 worker 上一步的命令完成（主线程本来就在等 vsync，无感）。
+    // wait_idle 才释放）。双队列后由 worker 自己每步 runtime.wait() 负责（q1 独占，
+    // 不被主线程 q0 渲染拖住），主线程无需再 wait。
     // 顺带保证 canvas 纹理内容已更新（拷贝完成）后才注册/渲染。
     // runtime.wait();
 
@@ -39,7 +39,7 @@ void App::renderControlPanel()
     {
         gpu_worker.should_exit = false;
         gpu_worker.launch_graph = true;
-gpu_worker.generate_interrupted = false;
+        gpu_worker.generate_interrupted = false;
         gpu_worker.launch_graph.notify_one();
     }
     if (ImGui::Button("Stop Worker"))
@@ -69,7 +69,7 @@ void App::renderTargetPanel()
         target_image_ready = false;
         old_target_image_path = target_image_path;
         // load image（async 线程只做 CPU 数据准备 + 写 Taichi buffer）
-        int img_w, img_h;
+        int img_w = 0, img_h = 0;
         auto fut = std::async(std::launch::async, [&]() {
             spdlog::debug("[image] load begin: path='{}', thread={}", target_image_path,
                           std::hash<std::thread::id>{}(std::this_thread::get_id()));
@@ -108,20 +108,29 @@ void App::renderTargetPanel()
                     target_rgb[i * 3 + 2] = data[i * 4 + 2];
                     target_alpha[i] = data[i * 4 + 3] > 1e-2 ? 1 : 0;
                 }
-                gpu_worker.gpu_buffer.target_origin.write(target_rgb.data(), target_rgb.size());
-                gpu_worker.gpu_buffer.valid_mask.write(target_alpha.data(), target_alpha.size());
-mask_staging.copy_to(gpu_worker.gpu_buffer.valid_mask);
+                // target/valid_mask/target_origin 都是 GPU 高频访问 buffer，使用
+                // 一次性 host-visible staging 上传，避免把它们分配到 HOST_VISIBLE 内存。
+                auto target_staging = runtime.allocate_ndarray<float>(
+                    {(uint32_t)img_h, (uint32_t)img_w}, {3}, true);
+                auto mask_staging = runtime.allocate_ndarray<int32_t>(
+                    {(uint32_t)img_h, (uint32_t)img_w}, {}, true);
+
+                target_staging.write(target_rgb.data(), target_rgb.size());
+                target_staging.copy_to(gpu_worker.gpu_buffer.target_origin);
+                target_staging.copy_to(gpu_worker.gpu_buffer.target);
+                mask_staging.write(target_alpha.data(), target_alpha.size());
+                mask_staging.copy_to(gpu_worker.gpu_buffer.valid_mask);
 
                 // copy_to 是异步提交；staging 是局部对象，必须等 GPU 完成后才能析构。
                 spdlog::debug("[image] target buffers uploaded, before runtime.wait()");
                 runtime.wait();
                 spdlog::debug("[image] runtime.wait() completed");
                 stbi_image_free(data);
-spdlog::debug("[image] decoded image memory freed");
+                spdlog::debug("[image] decoded image memory freed");
             }
             else
             {
-                spdlog::error("Failed to load image: " << target_image_path << std::endl;
+                spdlog::error("Failed to load image: {}", target_image_path);
             }
             // end
             target_image_ready = true;
@@ -152,10 +161,49 @@ spdlog::debug("[image] decoded image memory freed");
         ImGui::Image(ImTextureRef((ImTextureID)(uintptr_t)target_tex.descriptor()),
                      ImVec2((float)target_tex.width(), (float)target_tex.height()));
     }
+    ImGui::End();
+}
+
+// canvas 独立窗口：worker 每画完一个形状置位 canvas_ready，这里同步上传最新 canvas
+// 到显示纹理（target 同款路径：uploadAndRegister = runtime.wait + 同步拷贝 + fence 等待）。
+// exchange(false) 保证一帧只上传一次；上传完成后 renderUI 底部才置 gui_ack，
+// 因此 worker 的下一轮 g1 必然在本轮上传完成之后启动，无 g3 写 canvas 竞争。
+void App::renderCanvasPanel()
+{
+    ImGui::Begin("Canvas Panel");
+    static uint32_t interval = 0;
+    if (gpu_worker.canvas_ready.exchange(false))
+    {
+        if (interval++ % 100 == 0)
+        {
+            spdlog::debug("[main] canvas_ready, uploading to display texture...");
+            ensureDisplayTextures();
+            canvas_tex.uploadAndRegister(gpu_worker.gpu_buffer.canvas, runtime);
+
+        }
+    }
+
     if (canvas_tex.descriptor() != VK_NULL_HANDLE)
     {
+        const float tex_w = (float)canvas_tex.width();
+        const float tex_h = (float)canvas_tex.height();
+        // 缩放适配窗口（保持宽高比），方便大图全览
+        const float avail_w = ImGui::GetContentRegionAvail().x;
+        const float avail_h = ImGui::GetContentRegionAvail().y;
+        float scale = 1.0f;
+        if (avail_w > 0.0f && avail_h > 0.0f)
+        {
+            const float sx = avail_w / tex_w;
+            const float sy = avail_h / tex_h;
+            scale = sx < sy ? sx : sy;
+        }
         ImGui::Image(ImTextureRef((ImTextureID)(uintptr_t)canvas_tex.descriptor()),
-                     ImVec2((float)canvas_tex.width(), (float)canvas_tex.height()));
+                     ImVec2(tex_w * scale, tex_h * scale));
+        ImGui::Text("canvas %ux%u (%.0f%%)", canvas_tex.width(), canvas_tex.height(), scale * 100.0f);
+    }
+    else
+    {
+        ImGui::Text("Canvas not ready. Drag in a target image and press Start Worker.");
     }
     ImGui::End();
 }
@@ -173,7 +221,7 @@ void App::ensureDisplayTextures()
     if (!canvas_tex.is_valid() || canvas_tex.width() != w || canvas_tex.height() != h)
     {
         canvas_tex.create(vk_physical_device, vk_device, vk_queue, vk_queue_family, w, h, fmt);
-        canvas_tex.registerTexture(); // canvas 只注册不上传：内容由 worker 每步 queueUpload 刷新
+        canvas_tex.registerTexture(); // canvas 只注册不上传：内容由主线程每步 uploadAndRegister 刷新
     }
     if (!target_tex.is_valid() || target_tex.width() != w || target_tex.height() != h)
     {

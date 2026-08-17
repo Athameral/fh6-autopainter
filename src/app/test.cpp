@@ -16,10 +16,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <iostream>
 #include <string>
 #include <vector>
 
+#include <spdlog/spdlog.h>
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include <windows.h>
@@ -68,8 +68,7 @@ static bool load_and_resize_image(const std::string &path, int W, int H,
   int src_w = 0, src_h = 0, n = 0;
   unsigned char *data = stbi_load(path.c_str(), &src_w, &src_h, &n, 3);
   if (data == nullptr) {
-    std::cerr << "无法读取图片: " << path << " (" << stbi_failure_reason()
-              << ")" << std::endl;
+    spdlog::error("无法读取图片: {} ({})", path, stbi_failure_reason());
     return false;
   }
 
@@ -153,9 +152,9 @@ static void save_preview(const std::string &path, const float *canvas, int W,
                               0.5f);
   }
   if (!stbi_write_png(path.c_str(), W, H, 3, rgb8.data(), W * 3)) {
-    std::cerr << "保存 PNG 失败: " << path << std::endl;
+    spdlog::error("保存 PNG 失败: {}", path);
   } else {
-    std::cout << "  预览已保存: " << path << std::endl;
+    spdlog::info("预览已保存: {}", path);
   }
 }
 
@@ -173,12 +172,12 @@ int main(int argc, char **argv) {
     } else if (std::strcmp(argv[i], "--image") == 0 && i + 1 < argc) {
       image_path = argv[++i];
     } else if (std::strcmp(argv[i], "--help") == 0) {
-      std::cout << "用法: my_app [--shapes N] [--image path.png]" << std::endl;
+      spdlog::info("用法: my_app [--shapes N] [--image path.png]");
       return 0;
     }
   }
   if (max_shapes <= 0) {
-    std::cerr << "--shapes 必须为正整数" << std::endl;
+    spdlog::error("--shapes 必须为正整数");
     return 1;
   }
 
@@ -192,10 +191,8 @@ int main(int argc, char **argv) {
 
   float bg[3];
   compute_edge_bg(target_origin.data(), W, H, bg);
-  std::cout << "画布底色: (" << bg[0] << ", " << bg[1] << ", " << bg[2]
-            << ") (RGB)" << std::endl;
-  std::cout << "目标图: " << image_path << "  (" << W << "x" << H << ")"
-            << std::endl;
+  spdlog::info("画布底色: ({}, {}, {}) (RGB)", bg[0], bg[1], bg[2]);
+  spdlog::info("目标图: {} ({}x{})", image_path, W, H);
 
   // 锐化目标图（Python 端在 main() 里调用
   // sharpen_kernel(target_origin, target, 1.0)）
@@ -213,14 +210,13 @@ int main(int argc, char **argv) {
   ti::Runtime runtime(TI_ARCH_VULKAN);
   ti::AotModule aot = runtime.load_aot_module("graphs.tcm");
   if (!aot.is_valid()) {
-    std::cerr << "加载 graphs.tcm 失败（请确认运行目录下存在该文件）"
-              << std::endl;
+    spdlog::error("加载 graphs.tcm 失败（请确认运行目录下存在该文件）");
     return 1;
   }
   ti::ComputeGraph g1 = aot.get_compute_graph("g1");
   ti::ComputeGraph g2 = aot.get_compute_graph("g2");
   ti::ComputeGraph g3 = aot.get_compute_graph("g3");
-  std::cout << "成功加载 AOT 模块和计算图 g1/g2/g3" << std::endl;
+  spdlog::info("成功加载 AOT 模块和计算图 g1/g2/g3");
 
   // ── 3. 分配 ndarray（一次性，复用）──
   // 对应 Python:
@@ -348,11 +344,11 @@ int main(int argc, char **argv) {
             .count() /
         1000.0;
 
-    std::printf("[%4d/%d] Δ=%+.4f  @(%5.0f,%5.0f)  "
-                "r=(%4.1f,%4.1f)  θ=%5.0f°  α=%.2f  "
-                "RGB=(%.2f,%.2f,%.2f)  %.3fs\n",
-                shape_i + 1, max_shapes, score[0], x, y, rx, ry,
-                angle_deg, alpha, rgb_r, rgb_g, rgb_b, elapsed);
+    spdlog::info(
+      "[{}/{}] Δ={:+.4f} @({:.0f},{:.0f}) r=({:.1f},{:.1f}) θ={:.0f}° "
+      "α={:.2f} RGB=({:.2f},{:.2f},{:.2f}) {:.3f}s",
+      shape_i + 1, max_shapes, score[0], x, y, rx, ry, angle_deg, alpha,
+      rgb_r, rgb_g, rgb_b, elapsed);
 
     // MSE 与整张画布读回是纯诊断，改成每 SAVE_EVERY 步才做一次。
     // （原来每步 8MB 读回 + 200 万次串行 double 循环，是 C++ 版
@@ -368,7 +364,7 @@ int main(int argc, char **argv) {
         mse += d * d;
       }
       mse /= (double)(H * W * 3);
-      std::printf("        MSE=%.6f\n", mse);
+      spdlog::info("        MSE={:.6f}", mse);
 
       char path[128];
       std::snprintf(path, sizeof(path), "preview_05_%04d.png", shape_i + 1);
@@ -389,7 +385,7 @@ int main(int argc, char **argv) {
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                     total_start)
           .count();
-  std::printf("\n完成！%d 个图元，总耗时 %.1fs，平均 %.2fs/个\n", max_shapes,
-              total_elapsed, total_elapsed / max_shapes);
+  spdlog::info("完成！{} 个图元，总耗时 {:.1f}s，平均 {:.2f}s/个", max_shapes,
+               total_elapsed, total_elapsed / max_shapes);
   return 0;
 }
