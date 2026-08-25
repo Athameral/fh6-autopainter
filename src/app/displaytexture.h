@@ -7,11 +7,12 @@
 // 拷进 VkImage，并注册成 ImGui 可采样的 VkDescriptorSet。
 //
 // 线程约定：
-//  - create() / destroy() / registerTexture() / uploadAndRegister() 必须在主线程调用
-//    （涉及 ImGui_ImplVulkan_AddTexture 与 descriptor 分配）。
-//  - uploadAndRegister() 是当前唯一上传路径（target 与 canvas 共用）：内部
-//    runtime.wait() + 同步拷贝 + fence 等待，适合静态图（target）与主线程驱动的
-//    动态图（canvas 每步由 worker 置 canvas_ready、主线程消费后调用）。
+//  - create() / destroy() / registerTexture() / upload() / uploadAndRegister()
+//    必须在主线程调用（涉及 ImGui_ImplVulkan_AddTexture 与 descriptor 分配）。
+//  - upload() 是纯拷贝（不注册 descriptor）；registerTexture() 仅首次有效（幂等）。
+//    canvas/target 均在 ensureDisplayTextures 里 create+register，后续用 upload 刷新。
+//  - upload()/uploadAndRegister() 内部 fence 同步；调用方须保证 src 内容已对
+//    host/GPU 可见（如 worker runtime.wait 后、copyVectorToTarget 末尾 wait 后）。
 class DisplayTexture
 {
   public:
@@ -25,13 +26,19 @@ class DisplayTexture
                 uint32_t w, uint32_t h, VkFormat format);
     void destroy(); // 逆序释放：descriptor → view → image → memory → pool
 
-    // 主线程：把 src 全量拷入并注册 ImGui 纹理（内部 runtime.wait() + fence 同步）。
-    // 适合静态图（target）：图片加载完成后调用一次。
-    bool uploadAndRegister(const ti::NdArray<float> &src, ti::Runtime &runtime);
-
     // 主线程：仅注册 ImGui 纹理（不拷贝数据）。create() 后调用一次，
-    // 内容由 uploadAndRegister 持续刷新（canvas 的动态更新路径）。
+    // 内容由 upload 持续刷新（canvas/target 的动态更新路径）。
     bool registerTexture();
+
+    // 主线程：把 src 全量拷入（不注册 descriptor）。适合已 register 之后的
+    // 持续刷新（canvas 每步、target 重建后）。内部 fence 同步；
+    // 调用方须保证 src 内容已对 host/GPU 可见（如 worker runtime.wait 后、
+    // 或 copyVectorToTarget 末尾 runtime.wait 后）。
+    bool upload(const ti::NdArray<float> &src, ti::Runtime &runtime);
+
+    // 主线程：upload + registerTexture（register 幂等，仅首次生效）。
+    // 便捷封装；若 ensureDisplayTextures 已 register，直接用 upload 即可。
+    bool uploadAndRegister(const ti::NdArray<float> &src, ti::Runtime &runtime);
 
     VkDescriptorSet descriptor() const { return descriptor_; }
     uint32_t width() const { return w_; }

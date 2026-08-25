@@ -165,7 +165,8 @@ void App::renderTargetPanel()
         spdlog::debug(
                   "[image] display textures ensured: canvas={}x{}, target={}x{}",
                       canvas_tex.width(), canvas_tex.height(), target_tex.width(), target_tex.height());
-        target_tex.uploadAndRegister(gpu_worker.gpu_buffer.target_origin, runtime);
+        // ensure 已 register target_tex；这里只 upload 内容。
+        target_tex.upload(gpu_worker.gpu_buffer.target_origin, runtime);
         spdlog::debug("[image] target display texture upload completed");
         spdlog::debug(
                   "[main] target uploaded, target_desc={}, canvas_desc={}, canvas_valid={}",
@@ -191,7 +192,12 @@ void App::renderCanvasPanel()
     static uint32_t interval = 0;
     if (gpu_worker.canvas_ready.exchange(false))
     {
-        if (interval++ % 100 == 0)
+        status.n_shapes_drawn++;
+        if (interval++ % 3 == 0)
+        {
+            // canvas 纹理已在 ensureDisplayTextures（拖图时）create+register；
+            // 这里只 upload 最新内容。Start 前未拖图时 is_valid()=false → 跳过。
+            if (canvas_tex.is_valid())
         {
             spdlog::debug("[main] canvas_ready, uploading to display texture...");
                 canvas_tex.upload(gpu_worker.gpu_buffer.canvas, runtime);
@@ -238,11 +244,12 @@ void App::ensureDisplayTextures()
     if (!canvas_tex.is_valid() || canvas_tex.width() != w || canvas_tex.height() != h)
     {
         canvas_tex.create(vk_physical_device, vk_device, vk_queue, vk_queue_family, w, h, fmt);
-        canvas_tex.registerTexture(); // canvas 只注册不上传：内容由主线程每步 uploadAndRegister 刷新
+        canvas_tex.registerTexture(); // create 后立即 register；内容由 upload 刷新
     }
     if (!target_tex.is_valid() || target_tex.width() != w || target_tex.height() != h)
     {
         target_tex.create(vk_physical_device, vk_device, vk_queue, vk_queue_family, w, h, fmt);
+        target_tex.registerTexture(); // 与 canvas 统一：ensure 里 register，upload 只拷贝
     }
 }
 

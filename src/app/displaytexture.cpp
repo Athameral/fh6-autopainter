@@ -126,20 +126,24 @@ void DisplayTexture::destroy()
     current_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
-bool DisplayTexture::uploadAndRegister(const ti::NdArray<float> &src, ti::Runtime &runtime)
+bool DisplayTexture::upload(const ti::NdArray<float> &src, ti::Runtime &runtime)
 {
     if (image_ == VK_NULL_HANDLE || device_ == VK_NULL_HANDLE)
         return false;
 
-    // NdArray.write() 是 ti_map_memory + memcpy（走 staging，异步提交），
-    // 必须等队列执行完，GPU 侧 buffer 内容才可见。
-    // runtime.wait();
+    // 形状校验：src 必须是 (h_, w_) 且 elem_shape=(3,)，否则 vkCmdCopyBufferToImage
+    // 会越界读 src buffer（DisplayTexture 用 w_/h_ 作 imageExtent/bufferRowLength）。
+    const TiNdShape &s = src.shape();
+    const TiNdShape &es = src.elem_shape();
+    assert(s.dim_count == 2 && s.dims[0] == h_ && s.dims[1] == w_ &&
+           es.dim_count == 1 && es.dims[0] == 3 &&
+           "DisplayTexture::upload: src shape mismatch with texture w_/h_");
 
     // 导出 Taichi buffer 的底层 VkBuffer（同一 device，直接可用）
     TiVulkanMemoryInteropInfo mem_info = {};
     ti_export_vulkan_memory(runtime, src.memory().memory(), &mem_info);
 
-    // 录制单次命令：UNDEFINED→TRANSFER_DST→拷贝→SHADER_READ_ONLY
+    // 录制单次命令：UNDEFINED/SHADER_READ_ONLY→TRANSFER_DST→拷贝→SHADER_READ_ONLY
     vkResetCommandPool(device_, pool_, 0);
     VkCommandBufferAllocateInfo cbai = {};
     cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -166,24 +170,32 @@ bool DisplayTexture::uploadAndRegister(const ti::NdArray<float> &src, ti::Runtim
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
     // 双队列：kernel 在 q1（compute），拷贝提交到 q0（graphics）。
-    // 跨队列可见性由上面的 runtime.wait()（等 q1 排空）保证——fence wait 的
-    // 第二同步范围包含 wait 之后 host 的 vkQueueSubmit，因此本拷贝必然看见
-    // kernel 的全部写入，无需 semaphore。
+    // 跨队列可见性由调用方保证（worker runtime.wait() 排空 q1 / copyVectorToTarget
+    // 末尾 wait）——fence wait 的第二同步范围包含 wait 之后 host 的 vkQueueSubmit，
+    // 因此本拷贝必然看见 kernel 的全部写入，无需 semaphore。
     VkResult result = vkQueueSubmit(queue_, 1, &si, fence);
     if (result != VK_SUCCESS)
     {
         vkDestroyFence(device_, fence, nullptr);
+        vkFreeCommandBuffers(device_, pool_, 1, &cmd);
         return false;
     }
 
     result = vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(device_, fence, nullptr);
+    // 释放本次 command buffer（避免反复 upload 在 pool 里累积 cmd 对象）
+    vkFreeCommandBuffers(device_, pool_, 1, &cmd);
     if (result != VK_SUCCESS)
         return false;
 
     current_layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return true;
+}
 
-    // 注册到 ImGui（消耗 1 个 SAMPLED_IMAGE + 1 个 SAMPLER descriptor）
+bool DisplayTexture::uploadAndRegister(const ti::NdArray<float> &src, ti::Runtime &runtime)
+{
+    if (!upload(src, runtime))
+        return false;
     return registerTexture();
 }
 
