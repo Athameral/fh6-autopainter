@@ -29,6 +29,8 @@
 #include <volk.h>
 #endif
 
+#include <windows.h>
+
 #include "aot_module.h"
 #include "appui.h"
 #include <taichi/taichi_vulkan.h> // ti_import_vulkan_runtime / ti_export_vulkan_memory 等互操作接口
@@ -399,6 +401,7 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd)
 // Main code
 int main(int, char **)
 {
+    SetConsoleOutputCP(CP_UTF8);
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
