@@ -8,6 +8,8 @@
 #include <future>
 #include <thread>
 
+#include <filesystem>
+#include <fstream>
 
 void App::renderUI()
 {
@@ -78,7 +80,7 @@ void App::renderTargetPanel()
         auto fut = std::async(std::launch::async, [&]() {
             spdlog::debug("[image] load begin: path='{}', thread={}", target_image_path,
                           std::hash<std::thread::id>{}(std::this_thread::get_id()));
-            auto *data = stbi_loadf(target_image_path.c_str(), &img_w, &img_h, nullptr, 4);
+            auto *data = stbi_loadf_utf8(target_image_path.c_str(), &img_w, &img_h, nullptr, 4);
             spdlog::debug(
                               "[image] stbi_loadf returned: data={}, width={}, height={}, failure_reason='{}'",
                           static_cast<const void *>(data), img_w, img_h,
@@ -98,12 +100,13 @@ void App::renderTargetPanel()
             spdlog::debug(
                               "[image] load succeeded, before GPU buffer rebuild: width={}, height={}",
                           img_w, img_h);
-            gpu_worker.params.canvas_h = img_h;
-            gpu_worker.params.canvas_w = img_w;
-            gpu_worker.remakeBuffer();
+            params.canvas_h = img_h;
+            params.canvas_w = img_w;
+            // gpu_worker.remakeBuffer();
+            gpu_worker.setParams(params);
             spdlog::debug("[image] GPU buffers rebuilt");
-            std::vector<float> target_rgb(img_w * img_h * 3);
-            std::vector<int32_t> target_alpha(img_w * img_h);
+            target_rgb.resize(img_w * img_h * 3);
+            target_alpha_mask.resize(img_w * img_h);
             if (data)
             {
                 for (int i = 0; i < img_w * img_h; ++i)
@@ -111,25 +114,10 @@ void App::renderTargetPanel()
                     target_rgb[i * 3 + 0] = data[i * 4 + 0];
                     target_rgb[i * 3 + 1] = data[i * 4 + 1];
                     target_rgb[i * 3 + 2] = data[i * 4 + 2];
-                    target_alpha[i] = data[i * 4 + 3] > 1e-2 ? 1 : 0;
+                    target_alpha_mask[i] = data[i * 4 + 3] > 1e-2 ? 1 : 0;
                 }
-                // target/valid_mask/target_origin 都是 GPU 高频访问 buffer，使用
-                // 一次性 host-visible staging 上传，避免把它们分配到 HOST_VISIBLE 内存。
-                auto target_staging = runtime.allocate_ndarray<float>(
-                    {(uint32_t)img_h, (uint32_t)img_w}, {3}, true);
-                auto mask_staging = runtime.allocate_ndarray<int32_t>(
-                    {(uint32_t)img_h, (uint32_t)img_w}, {}, true);
-
-                target_staging.write(target_rgb.data(), target_rgb.size());
-                target_staging.copy_to(gpu_worker.gpu_buffer.target_origin);
-                target_staging.copy_to(gpu_worker.gpu_buffer.target);
-                mask_staging.write(target_alpha.data(), target_alpha.size());
-                mask_staging.copy_to(gpu_worker.gpu_buffer.valid_mask);
-
-                // copy_to 是异步提交；staging 是局部对象，必须等 GPU 完成后才能析构。
-                spdlog::debug("[image] target buffers uploaded, before runtime.wait()");
-                runtime.wait();
-                spdlog::debug("[image] runtime.wait() completed");
+                copyVectorToTarget();
+                spdlog::debug("[image] target data copied to GPU buffer");
                 stbi_image_free(data);
                 spdlog::debug("[image] decoded image memory freed");
             }
@@ -182,9 +170,8 @@ void App::renderCanvasPanel()
         if (interval++ % 100 == 0)
         {
             spdlog::debug("[main] canvas_ready, uploading to display texture...");
-            ensureDisplayTextures();
-            canvas_tex.uploadAndRegister(gpu_worker.gpu_buffer.canvas, runtime);
-
+                canvas_tex.upload(gpu_worker.gpu_buffer.canvas, runtime);
+            }
         }
     }
 
@@ -239,7 +226,7 @@ void App::setTargetImagePath(const char *path)
     target_image_path = path;
 }
 
-App::App(GLFWwindow *window, ti::Runtime &runtime, const PainterParams &params, const ti::AotModule &aot_module,
+App::App(GLFWwindow *window, ti::Runtime &runtime, PainterParams &params, const ti::AotModule &aot_module,
          VkPhysicalDevice physical_device, VkDevice device, VkQueue queue, uint32_t queue_family)
     : window(window), runtime(runtime), aot_module(aot_module), params(params),
       gpu_worker(runtime, params, aot_module), vk_physical_device(physical_device), vk_device(device), vk_queue(queue),
@@ -279,6 +266,44 @@ void file_dragin_callback(GLFWwindow *window, int count, const char **paths)
     assert(app != nullptr);
     app->setTargetImagePath(paths[0]);
 }
+
+float *App::stbi_loadf_utf8(const char *filename, int *x, int *y, int *channels_in_file, int desired_channels)
+{
+    // filename should be in utf-8, use only on windows.
+    std::filesystem::path filePath = std::filesystem::u8path(filename);
+    std::vector<uint8_t> buffer;
+    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+    {
+        spdlog::error("failed to open file: {}", filename);
+        return nullptr;
+    }
+    buffer.resize(file.tellg());
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char *>(buffer.data()), buffer.size());
+    file.close();
+    return stbi_loadf_from_memory(buffer.data(), buffer.size(), x, y, channels_in_file, desired_channels);
+}
+
+void App::copyVectorToTarget() // should be called after resetting params.
+{
+    auto img_h = gpu_worker.params.canvas_h, img_w = gpu_worker.params.canvas_w;
+    // target/valid_mask/target_origin 都是 GPU 高频访问 buffer，使用
+    // 一次性 host-visible staging 上传，避免把它们分配到 HOST_VISIBLE 内存。
+    auto target_staging = runtime.allocate_ndarray<float>({(uint32_t)img_h, (uint32_t)img_w}, {3}, true);
+    auto mask_staging = runtime.allocate_ndarray<int32_t>({(uint32_t)img_h, (uint32_t)img_w}, {}, true);
+
+    target_staging.write(target_rgb);
+    target_staging.copy_to(gpu_worker.gpu_buffer.target_origin);
+    target_staging.copy_to(gpu_worker.gpu_buffer.target);
+    mask_staging.write(target_alpha_mask);
+    mask_staging.copy_to(gpu_worker.gpu_buffer.valid_mask);
+
+    // copy_to 是异步提交；staging 是局部对象，必须等 GPU 完成后才能析构。
+    spdlog::debug("[image] target buffers uploaded, before runtime.wait()");
+    runtime.wait();
+}
+
 void App::resetStatus()
 {
     // 计数归零（PainterStatus 默认值：n_shapes_drawn=0）
