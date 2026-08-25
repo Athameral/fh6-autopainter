@@ -251,3 +251,24 @@ void GPUWorker::remakeBuffer()
     gpu_buffer = PainterGPUBuffer(runtime, params);
     bind_graph_args();
 }
+
+void GPUWorker::resetCanvas()
+{
+    // 确保 q1 无在飞命令引用旧 canvas buffer（调用方须保证 worker 已停下）。
+    runtime.wait();
+    // 重新 allocate。注意：Taichi/Vulkan 不保证清零，驱动常复用刚释放的显存
+    // （正是旧 canvas 占用的那块）→ 新 canvas ndarray 里就是旧画面内容。
+    // g1 会读旧内容算误差、g3 在旧内容上画新形状 → 看起来"没清零"。必须显式写零。
+    gpu_buffer.canvas = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, false);
+    // canvas 是 device-only（host_access=false），用一次性 host-visible staging 写零。
+    auto zeros_staging = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, true);
+    std::vector<float> zeros((size_t)params.canvas_h * params.canvas_w * 3, 0.0f);
+    zeros_staging.write(zeros);
+    zeros_staging.copy_to(gpu_buffer.canvas);
+    runtime.wait(); // 等 staging 拷贝完成，staging 析构前必须 wait
+    // ndarray 对象换了，g1/g2/g3 仍持旧句柄 → 重绑 canvas 引用。
+    // 不调完整 bind_graph_args，避免重绑其它不变参数。
+    g1["canvas"] = gpu_buffer.canvas;
+    g2["canvas"] = gpu_buffer.canvas;
+    g3["canvas"] = gpu_buffer.canvas;
+}

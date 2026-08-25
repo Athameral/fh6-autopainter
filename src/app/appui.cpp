@@ -37,6 +37,11 @@ void App::renderControlPanel()
     ImGui::Text("target_image_ready: %s", target_image_ready ? "true" : "false");
     if (ImGui::Button("Start Worker"))
     {
+        gpu_worker.setParams(params);
+        copyVectorToTarget();
+        // 重置计数 + 重分配 canvas + 销毁旧 canvas 显示纹理，让新一轮从干净状态开始。
+        // 假设：用户点 Start 前 worker 已 Stop（无在飞 g1/g2/g3 引用旧 canvas）。
+        resetStatus();
         gpu_worker.should_exit = false;
         gpu_worker.launch_graph = true;
         gpu_worker.generate_interrupted = false;
@@ -273,4 +278,25 @@ void file_dragin_callback(GLFWwindow *window, int count, const char **paths)
     auto *app = (App *)glfwGetWindowUserPointer(window);
     assert(app != nullptr);
     app->setTargetImagePath(paths[0]);
+}
+void App::resetStatus()
+{
+    // 计数归零（PainterStatus 默认值：n_shapes_drawn=0）
+    status = PainterStatus{};
+    // 重分配 canvas ndarray + 重绑 g1/g2/g3（调用方须保证 worker 已停下）
+    gpu_worker.resetCanvas();
+    // 销毁 canvas 显示纹理后立即重建（create+register）。
+    canvas_tex.destroy();
+    ensureDisplayTextures();
+    // 新 VkImage 的 initialLayout=UNDEFINED，内容未定义（驱动常复用显存 → 显示旧 canvas）。
+    // 上传全零 staging ndarray 让显示先变黑，直到 worker 第一轮 g3+upload 刷新真实内容。
+    if (canvas_tex.is_valid())
+    {
+        const uint32_t w = gpu_worker.params.canvas_w, h = gpu_worker.params.canvas_h;
+        auto zeros = runtime.allocate_ndarray<float>({h, w}, {3}, true);
+        std::vector<float> zero_vec((size_t)w * h * 3, 0.0f);
+        zeros.write(zero_vec);
+        runtime.wait(); // 等 staging write 完成，upload 才能读到零
+        canvas_tex.upload(zeros, runtime);
+    }
 }

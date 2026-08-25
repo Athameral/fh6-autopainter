@@ -41,6 +41,10 @@ class GPUWorker
     GPUWorker(ti::Runtime &runtime, const PainterParams &params, const ti::AotModule &aot_module);
     void setParams(const PainterParams &new_params);
     void remakeBuffer();
+    // 重分配 canvas ndarray（清零=重新 allocate，不写 zeros；显示路径有 canvas_ready
+    // 门控，只 upload g3 画过的内容）并重绑 g1/g2/g3 的 canvas 引用。
+    // 调用方须保证 worker 已停下（无在飞 g1/g2/g3 引用旧 canvas buffer）。
+    void resetCanvas();
     ~GPUWorker();
 
   private:
