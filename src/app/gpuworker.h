@@ -20,7 +20,7 @@ class GPUWorker
 {
   public:
     ti::Runtime &runtime;
-    PainterParams params;
+    PainterParams params; // a snapshot only.
     PainterGPUBuffer gpu_buffer;
     struct Ellipse best_ellipse_cpu;
 

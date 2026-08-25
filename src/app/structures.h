@@ -49,7 +49,7 @@ struct PainterParams
     float alpha_step;
 
     // evaluation
-    int32_t sample_step;
+    float sample_step_deno;
 
     // cpu
     int32_t hill_climb_rounds;

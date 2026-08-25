@@ -100,14 +100,15 @@ void GPUWorker::bind_graph_args()
         g1["best_score"] = gpu_buffer.best_score;
 
         g1["MIN_RADIUS"] = params.min_radius;
-        g1["MAX_RADIUS"] = params.max_radius;
+        // g1["MAX_RADIUS"] = params.max_radius;
+        // calculated dynamically in run() based on progress
         g1["MIN_ALPHA"] = params.min_alpha;
         g1["MAX_ALPHA"] = params.max_alpha;
         g1["RANDOM_SAMPLES"] = params.random_samples;
         g1["SAMPLE_BINS"] = params.sample_bins;
         g1["SAMPLE_LEAK_RATIO"] = params.sample_leak_ratio;
         g1["BLUR_SIZE"] = params.blur_size;
-        g1["SAMPLE_STEP"] = params.sample_step;
+        // g1["SAMPLE_STEP"] = params.sample_step;
 
         // g2: 爬山变异（每轮原地更新 best_ellipse，多轮复用同一 ndarray）
         g2["best_ellipse"] = gpu_buffer.best_ellipse;
@@ -122,7 +123,7 @@ void GPUWorker::bind_graph_args()
         g2["RADIUS_STEP"] = params.radius_step;
         g2["THETA_STEP_RAD"] = params.theta_step_rad;
         g2["ALPHA_STEP"] = params.alpha_step;
-        g2["SAMPLE_STEP"] = params.sample_step;
+        // g2["SAMPLE_STEP"] = params.sample_step;
 
         // g3: 把最优椭圆画到 canvas
         g3["best_ellipse"] = gpu_buffer.best_ellipse;

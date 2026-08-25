@@ -57,8 +57,32 @@ void App::renderControlPanel()
         gpu_worker.should_exit = false;
         gpu_worker.launch_graph = false;
         gpu_worker.generate_interrupted = true;
-        gpu_worker.launch_graph.notify_all();
-        gpu_worker.gui_ack.notify_all(); // 万一 worker 卡在 gui_ack.wait，也唤醒它退出
+        gpu_worker.launch_graph.notify_one();
+        gpu_worker.gui_ack.notify_one(); // 万一 worker 卡在 gui_ack.wait，也唤醒它退出
+    }
+    if (ImGui::CollapsingHeader("Parameters"))
+    {
+        ImGui::SliderFloat("min_radius", &params.min_radius, 0.1f, 100.0f);
+        ImGui::SliderFloat("max_radius", &params.max_radius, 0.001f, 0.2f);
+        ImGui::SliderFloat("min_alpha", &params.min_alpha, 0.0f, 1.0f);
+        ImGui::SliderFloat("max_alpha", &params.max_alpha, 0.0f, 1.0f);
+        ImGui::SliderInt("random_samples", &params.random_samples, 1000, 120000);
+        ImGui::SliderInt("sample_bins", &params.sample_bins, 16, 8192);
+        ImGui::SliderFloat("sample_leak_ratio", &params.sample_leak_ratio, 0.0f, 1.0f);
+        ImGui::SliderInt("blur_size", &params.blur_size, 1, 15);
+        // ImGui::SliderInt("canvas_w", reinterpret_cast<int *>(&params.canvas_w), 64, 2048);
+        ImGui::Text("canvas_w: %d", params.canvas_w);
+        ImGui::Text("canvas_h: %d", params.canvas_h);
+        // ImGui::SliderInt("canvas_h", reinterpret_cast<int *>(&params.canvas_h), 64, 2048);
+        ImGui::SliderFloat("sharpen_intensity", &params.sharpen_intensity, 0.0f, 5.0f);
+        ImGui::SliderInt("mutations_per_round", &params.mutations_per_round, 1000, 20000);
+        ImGui::SliderFloat("move_step", &params.move_step, 1.0f, 20.0f);
+        ImGui::SliderFloat("radius_step", &params.radius_step, 1.0f, 20.0f);
+        ImGui::SliderFloat("theta_step_rad", &params.theta_step_rad, 0.01f, 3.14f);
+        ImGui::SliderFloat("alpha_step", &params.alpha_step, 0.01f, 1.0f);
+        ImGui::SliderFloat("sample_step_deno", &params.sample_step_deno, 1.f, 10.f);
+        ImGui::SliderInt("hill_climb_rounds", &params.hill_climb_rounds, 1, 50);
+        ImGui::SliderInt("total_shapes", reinterpret_cast<int *>(&params.total_shapes), 100, 10000);
     }
     ImGui::End();
 }
@@ -197,6 +221,7 @@ void App::renderCanvasPanel()
     {
         ImGui::Text("Canvas not ready. Drag in a target image and press Start Worker.");
     }
+    ImGui::ProgressBar(float(status.n_shapes_drawn) / float(gpu_worker.params.total_shapes));
     ImGui::End();
 }
 
