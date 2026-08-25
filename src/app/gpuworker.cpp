@@ -56,7 +56,7 @@ GPUWorker::GPUWorker(ti::Runtime &runtime, const PainterParams &params, const ti
     : runtime(runtime), params(params), gpu_buffer(runtime, params), should_exit(false),
       generate_interrupted(false), launch_graph(false), gui_ack(false)
 {
-    // g0 = aot_module.get_compute_graph("g0");
+    g0 = aot_module.get_compute_graph("g0");
     g_m = aot_module.get_compute_graph("g_m");
     g1 = aot_module.get_compute_graph("g1");
     g2 = aot_module.get_compute_graph("g2");
@@ -140,6 +140,7 @@ void GPUWorker::run()
 
         // set our params and buffers
         bind_graph_args();
+        g0.launch();
 
         // g_m：构建 valid 像素列表（valid_pixels/valid_n_pixels）。
         // target 不变 → 列表不变，每次 Start 执行一次即可（remakeBuffer 重建 buffer
@@ -159,6 +160,7 @@ void GPUWorker::run()
                           n_valid, vp[0], vp[1], vp[2], vp[3], vp[4], vp[5]);
         }
 
+        float diag = std::sqrt((float)(params.canvas_w * params.canvas_w + params.canvas_h * params.canvas_h));
         // step 0. sharpen image, optional, can be done on CPU
         for (int step = 0; step < (int)params.total_shapes; ++step)
         {
@@ -168,6 +170,14 @@ void GPUWorker::run()
                 generate_interrupted = false;
                 break;
             }
+
+            // dynamically
+            float process = (float)(step + 1) / (float)params.total_shapes;
+            float dynamic_radius = std::max(diag * (params.max_radius - 0.2f * process * sqrt(process)), 4.0f);
+            int32_t dynamic_sample_step = std::max(1, static_cast<int32_t>(dynamic_radius / params.sample_step_deno));
+            g1["MAX_RADIUS"] = dynamic_radius;
+            g1["SAMPLE_STEP"] = dynamic_sample_step;
+            g2["SAMPLE_STEP"] = dynamic_sample_step;
 
             // step 1. generate random ellipses, evaluate, and pick the best one
             // i.e. launch graph 1
