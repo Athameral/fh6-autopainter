@@ -536,10 +536,10 @@ int main(int, char **)
     interop.graphics_queue_family_index = g_QueueFamily;
     ti::Runtime runtime(TI_ARCH_VULKAN, ti_import_vulkan_runtime(&interop), true);
 
-    // 加载 AOT 计算图、构造 App（demo：默认参数，后续由 UI 调整）
+    // default params
     PainterParams params = {};
     params.min_radius = 1.0f;
-    params.max_radius = 30.0f;
+    params.max_radius = 0.05f;
     params.min_alpha = 0.3f;
     params.max_alpha = 1.0f;
     params.random_samples = 60000;
@@ -554,7 +554,7 @@ int main(int, char **)
     params.radius_step = 6.0f;
     params.theta_step_rad = 0.523599f;
     params.alpha_step = 0.15f;
-    params.sample_step = 4;
+    params.sample_step_deno = 8;
     params.hill_climb_rounds = 12;
     params.total_shapes = 2500;
 
