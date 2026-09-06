@@ -63,7 +63,7 @@ def compute_error_field(canvas: ti.types.ndarray(dtype=tm.vec3, ndim=2),
     for I in ti.grouped(error_field_buffer):
         error_field_buffer[I] = 0.0
     
-    max_error = 0.0
+    max_error = 1e-6
     for I in ti.grouped(canvas):
         if valid_mask[I] == 1:
             c1 = rgb_to_ycbcr(canvas[I])
@@ -100,9 +100,9 @@ def sample_from_error(
     rejection sampling here."""
     for i in range(n_samples):
         for _ in range(max_attempts):
-            x = ti.random(ti.i32) % error_field.shape[1]
-            y = ti.random(ti.i32) % error_field.shape[0]
-            p = ti.random(ti.f32)
+            x = ti.abs(ti.random(ti.i32)) % error_field.shape[1]
+            y = ti.abs(ti.random(ti.i32)) % error_field.shape[0]
+            p = ti.abs(ti.random(ti.f32))
             out_sampled_pixels[i] = ti.math.vec2(x, y)
             if p < error_field[y, x]:
                 break
@@ -126,12 +126,7 @@ def sample_from_error_topk(
     This is a top-k sampling method: we first divide the image into histogram of n_bins,
     then get the approximate threshold of top-k error values,
     and finally sample from the pixels whose error is above the threshold.
-    minmax_buffer 是长度 2 的临时 buffer（[min, max]），用于归约：局部变量上的
-    ti.atomic_max/min 在并行循环里不可靠（实测 CPU/Vulkan 都停在初始值），
-    写外部 ndarray 的原子操作才跨线程有效。hist_buffer 由本 kernel 负责清零。
-    out_n_samples_actual 是长度 1 的 buffer，传出实际写入的采样数：
-    阈值取 bin 上边界后合格像素数 < n_samples，调用方按此值消费，
-    不会读到残留的旧采样点。"""
+    """
 
     n_samples_topk = ti.cast(n_samples * (1 - leak_ratio), ti.i32)
     n_samples_leak = n_samples - n_samples_topk
@@ -151,7 +146,9 @@ def sample_from_error_topk(
     # 2. Compute histogram of error values
     for I in ti.grouped(error_field):
         val = error_field[I]
-        bin_idx = ti.cast((val - min_error) / (max_error - min_error + 1e-6) * n_bins, ti.i32)
+        bin_idx_float = (val - min_error) / (max_error - min_error + 1e-6) * n_bins
+        bin_idx_float = ti.math.clamp(bin_idx_float, 0.0, n_bins - 1.0)
+        bin_idx = ti.cast(bin_idx_float, ti.i32)
         ti.atomic_add(hist_buffer[bin_idx], 1)
 
     # 3. Find threshold of top-k error values.
@@ -168,7 +165,7 @@ def sample_from_error_topk(
         if accum >= n_samples_topk:
             threshold = min_error + ((b + 1) / n_bins) * (max_error - min_error)
             break
-    
+
     # 4. Sample from pixels whose error is above the threshold.
     # 只用 ti.atomic_add 拿唯一索引——切勿再对 topk_count 做普通读写（如 += 1），
     # 局部变量的原子操作会被降级为 load+add+store，与普通 RMW 混用会产生竞争。
@@ -183,4 +180,4 @@ def sample_from_error_topk(
     for i in range(n_samples_leak):
         idx = ti.atomic_add(topk_count, 1)
         if idx < n_samples:
-            out_sampled_pixels[idx] = valid_pixels[ti.random(ti.i32) % n_valid_pixels[0]]
+            out_sampled_pixels[idx] = valid_pixels[ti.abs(ti.random(ti.i32)) % n_valid_pixels[0]]
