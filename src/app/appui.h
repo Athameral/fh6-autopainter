@@ -24,6 +24,7 @@ class App
 
     void renderUI();
     void setTargetImagePath(const char *path);
+    void step();
 
   private:
     // 重置 PainterStatus（计数归零）+ 重分配 canvas buffer + 销毁 canvas 显示纹理
@@ -37,6 +38,7 @@ class App
     struct PainterStatus
     {
         uint32_t n_shapes_drawn = 0;
+        std::vector<struct Ellipse> ellipses;
     } status;
 
     std::vector<float> target_rgb;

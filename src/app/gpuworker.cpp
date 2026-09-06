@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <thread>
@@ -231,7 +232,16 @@ void GPUWorker::run()
                     sp[1], sp[2], sp[3], ef_min, ef_max, px(W / 2, H / 2), px(W / 2 + 1, H / 2),
                     px(W / 2, H / 2 + 1), px(0, 0), px(W - 1, 0), px(0, H - 1), px(W - 1, H - 1));
             }
+            // read back to cpu
+            std::array<float, 6> best_ellipse_cpu_array;
+            std::array<float, 3> best_ycbcr_cpu_array;
+            gpu_buffer.best_ellipse.read(best_ellipse_cpu_array.data(), 6);
+            gpu_buffer.best_ycbcr.read(best_ycbcr_cpu_array.data(), 3);
+            best_ellipse_cpu.Shape = {best_ellipse_cpu_array[0], best_ellipse_cpu_array[1], best_ellipse_cpu_array[2],
+                                         best_ellipse_cpu_array[3], best_ellipse_cpu_array[4], best_ellipse_cpu_array[5]};
+            best_ellipse_cpu.Color = {best_ycbcr_cpu_array[0], best_ycbcr_cpu_array[1], best_ycbcr_cpu_array[2]};
             gui_ack = false;
+            data_ready = true;
 
             // 通知主线程：canvas 已更新。主线程（renderUI）消费后会用
             // uploadAndRegister 同步上传到显示纹理（target 同款路径，见 appui.cpp）。

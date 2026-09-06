@@ -27,6 +27,16 @@ void App::renderUI()
 
     // 通知 worker：本帧 UI 已处理完结果（gui_ack 握手）。
     // worker 的 gui_ack.wait(false) 遇 true 立即通过，不阻塞生成循环。
+
+}
+
+void App::step()
+{
+    renderUI();
+    if (gpu_worker.data_ready) {
+        gpu_worker.data_ready = false;
+        status.ellipses.push_back(gpu_worker.best_ellipse_cpu);
+    }
     gpu_worker.gui_ack = true;
     gpu_worker.gui_ack.notify_one();
 }

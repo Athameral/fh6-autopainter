@@ -35,6 +35,7 @@ class GPUWorker
     // 用 uploadAndRegister 同步上传 canvas 到显示纹理（target 同款路径）。
     // 消费端 exchange(false) 复位，保证一帧只上传一次最新结果。
     std::atomic<bool> canvas_ready = false;
+    std::atomic<bool> data_ready = false; // worker 生成完毕，主线程可读 best_ellipse_cpu
 
     std::thread worker_thread;
 
