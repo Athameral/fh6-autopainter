@@ -48,6 +48,11 @@ target_compile_definitions(app_spdlog INTERFACE SPDLOG_USE_STD_FORMAT)
 add_executable(my_app src/app/main.cpp)
 add_executable(test_app src/app/test.cpp)
 target_compile_definitions(my_app PRIVATE "GRAPH_TCM_PATH=\"${GRAPH_TCM_FILE}\"")
+target_include_directories(test_app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/c_api/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/external/include
+)
 
 # imgui
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/3rd/imgui)
@@ -95,6 +100,7 @@ target_include_directories(my_app PRIVATE
 target_compile_definitions(my_app PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
 target_link_libraries(my_app PRIVATE glfw )
 target_link_libraries(my_app PRIVATE app_spdlog)
+target_link_libraries(test_app PRIVATE app_spdlog)
 
 
 # # 5. 包含 Taichi C/C++ API 的头文件路径（external/include 提供 stb 单头文件库）
