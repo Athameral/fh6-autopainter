@@ -1,6 +1,7 @@
 #pragma once
 #include "displaytexture.h"
 #include "gpuworker.h"
+#include "injector.h"
 #include "structures.h"
 
 #include "stb_image.h"
@@ -51,6 +52,12 @@ class App
     DisplayTexture target_tex;
 
     GPUWorker gpu_worker;
+
+    // 外部内存注入器：App 长期持有，跨请求复用进程句柄与定位缓存。
+    // inject_busy_ 防重入：注入/重定位进行中时忽略新的按钮点击。
+    fh6::injector::Injector injector_;
+    std::atomic<bool> inject_busy_{false};
+
     std::string target_image_path, old_target_image_path;
     // always in utf-8.
 

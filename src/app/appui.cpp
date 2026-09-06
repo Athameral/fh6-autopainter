@@ -1,5 +1,6 @@
 #include "appui.h"
 #include "imgui.h"
+#include "injector.h"
 #include "spdlog/common.h"
 #include "taichi/cpp/taichi.hpp"
 
@@ -71,6 +72,65 @@ void App::renderControlPanel()
         gpu_worker.generate_interrupted = true;
         gpu_worker.launch_graph.notify_one();
         gpu_worker.gui_ack.notify_one(); // 万一 worker 卡在 gui_ack.wait，也唤醒它退出
+    }
+    if (ImGui::Button("Inject"))
+    {
+        if (inject_busy_.exchange(true))
+        {
+            spdlog::warn("[inject-ui] an injection is already running; ignoring the click");
+        }
+        else
+        {
+            std::thread([this]() {
+                spdlog::info("[inject-ui] worker started: ellipses={} canvas={}x{} template_layers={}",
+                             status.ellipses.size(), params.canvas_w, params.canvas_h, params.total_shapes);
+                auto result = injector_.writeEllipses(status.ellipses,
+                                                      params.canvas_w,
+                                                      params.canvas_h,
+                                                      params.total_shapes);
+                spdlog::info(
+                    "[inject-ui] result: success={} pid={} process='{}' locator='{}' requested={} converted={} "
+                    "skipped={} written={} cleared={} mesh_paths={} cached_group={} cached_vtable={}",
+                    result.success,
+                    result.pid,
+                    result.process_name,
+                    result.locator,
+                    result.requested_shapes,
+                    result.converted_shapes,
+                    result.skipped_shapes,
+                    result.written_layers,
+                    result.cleared_layers,
+                    result.mesh_paths_updated,
+                    result.used_cached_group,
+                    result.used_cached_vtable);
+                if (!result.error.empty())
+                    spdlog::error("[inject-ui] injection failed: {}", result.error);
+                else
+                    spdlog::info("[inject-ui] injection succeeded");
+                inject_busy_ = false;
+            }).detach();
+        }
+    }
+    if (ImGui::Button("Force Relocate"))
+    {
+        if (inject_busy_.exchange(true))
+        {
+            spdlog::warn("[inject-ui] an injection is already running; ignoring the click");
+        }
+        else
+        {
+            std::thread([this]() {
+                spdlog::info("[inject-ui] force relocate started: template_layers={}", params.total_shapes);
+                const bool ok = injector_.Locate(params.total_shapes);
+                const auto loc = injector_.location();
+                spdlog::info("[inject-ui] force relocate: success={} locator='{}' group=0x{:x} vtable=0x{:x}",
+                             ok,
+                             loc.locator,
+                             static_cast<unsigned long long>(loc.group),
+                             static_cast<unsigned long long>(loc.vtable));
+                inject_busy_ = false;
+            }).detach();
+        }
     }
     if (ImGui::CollapsingHeader("Parameters"))
     {
