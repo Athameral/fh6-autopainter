@@ -1,5 +1,6 @@
 #include "appui.h"
 #include "imgui.h"
+#include "spdlog/common.h"
 #include "taichi/cpp/taichi.hpp"
 
 #include "stb_image.h"
@@ -16,6 +17,7 @@ void App::renderUI()
     renderControlPanel();
     renderTargetPanel();
     renderCanvasPanel();
+    renderDebugPanel();
 
     // 【关键】Taichi 内部资源清理（submitted_cmdbuffers_ 的 fence/semaphore 只有
     // wait_idle 才释放）。双队列后由 worker 自己每步 runtime.wait() 负责（q1 独占，
@@ -356,4 +358,24 @@ void App::resetStatus()
         runtime.wait(); // 等 staging write 完成，upload 才能读到零
         canvas_tex.upload(zeros, runtime);
     }
+}
+
+void App::renderDebugPanel()
+{
+    static spdlog::level::level_enum old_log_level = spdlog::level::debug;
+    static spdlog::level::level_enum log_level = spdlog::get_level();
+
+    ImGui::Begin("Debug Panel");
+    ImGui::RadioButton("Debug", (int*)&log_level, (int)spdlog::level::debug);
+    ImGui::RadioButton("Info", (int*)&log_level, (int)spdlog::level::info);
+    ImGui::RadioButton("Warning", (int*)&log_level, (int)spdlog::level::warn);
+    ImGui::RadioButton("Error", (int*)&log_level, (int)spdlog::level::err);
+
+    if (log_level != old_log_level)
+    {
+        spdlog::set_level(log_level);
+        old_log_level = log_level;
+    }
+
+    ImGui::End();
 }

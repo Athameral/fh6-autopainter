@@ -63,6 +63,7 @@ class App
     void renderControlPanel();
     void renderTargetPanel();
     void renderCanvasPanel();
+    void renderDebugPanel();
     // 主线程：按需创建/重建两张显示纹理（图片加载/尺寸变化时调用一次）
     void ensureDisplayTextures();
     void copyVectorToTarget();
