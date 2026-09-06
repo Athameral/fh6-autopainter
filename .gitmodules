@@ -1,0 +1,3 @@
+[submodule "3rd/taichi"]
+	path = 3rd/taichi
+	url = https://github.com/Athameral/taichi.git
