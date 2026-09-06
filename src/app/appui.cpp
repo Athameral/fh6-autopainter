@@ -178,8 +178,10 @@ void App::renderTargetPanel()
 
     if (target_tex.descriptor() != VK_NULL_HANDLE)
     {
-        ImGui::Image(ImTextureRef((ImTextureID)(uintptr_t)target_tex.descriptor()),
-                     ImVec2((float)target_tex.width(), (float)target_tex.height()));
+        static bool fit = true;
+        ImGui::Checkbox("Shrink to fit window", &fit);
+        drawImage(target_tex, fit);
+        ImGui::Text("target %ux%u", target_tex.width(), target_tex.height());
     }
     ImGui::End();
 }
@@ -209,21 +211,10 @@ void App::renderCanvasPanel()
 
     if (canvas_tex.descriptor() != VK_NULL_HANDLE)
     {
-        const float tex_w = (float)canvas_tex.width();
-        const float tex_h = (float)canvas_tex.height();
-        // 缩放适配窗口（保持宽高比），方便大图全览
-        const float avail_w = ImGui::GetContentRegionAvail().x;
-        const float avail_h = ImGui::GetContentRegionAvail().y;
-        float scale = 1.0f;
-        if (avail_w > 0.0f && avail_h > 0.0f)
-        {
-            const float sx = avail_w / tex_w;
-            const float sy = avail_h / tex_h;
-            scale = sx < sy ? sx : sy;
-        }
-        ImGui::Image(ImTextureRef((ImTextureID)(uintptr_t)canvas_tex.descriptor()),
-                     ImVec2(tex_w * scale, tex_h * scale));
-        ImGui::Text("canvas %ux%u (%.0f%%)", canvas_tex.width(), canvas_tex.height(), scale * 100.0f);
+        static bool fit = true;
+        ImGui::Checkbox("Shrink to fit window", &fit);
+        drawImage(canvas_tex, fit);
+        ImGui::Text("canvas %ux%u", canvas_tex.width(), canvas_tex.height());
     }
     else
     {
@@ -358,6 +349,30 @@ void App::resetStatus()
         runtime.wait(); // 等 staging write 完成，upload 才能读到零
         canvas_tex.upload(zeros, runtime);
     }
+}
+
+void App::drawImage(const DisplayTexture &texture, bool fit = false)
+{
+    float scale = 1.0f;
+    const float tex_w = (float)texture.width();
+    const float tex_h = (float)texture.height();
+    // fit to parent window
+    if (fit)
+    {
+        const float avail_w = ImGui::GetContentRegionAvail().x;
+        const float avail_h = ImGui::GetContentRegionAvail().y;
+        if (avail_w > 0.0f && avail_h > 0.0f)
+        {
+            const float sx = avail_w / tex_w;
+            const float sy = avail_h / tex_h;
+            scale = sx < sy ? sx : sy;
+        }
+    }
+    else
+    {
+        scale = 1.0f;
+    }
+    ImGui::Image(ImTextureRef((ImTextureID)(uintptr_t)texture.descriptor()), ImVec2(tex_w * scale, tex_h * scale));
 }
 
 void App::renderDebugPanel()
