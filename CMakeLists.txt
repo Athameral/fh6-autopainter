@@ -26,6 +26,7 @@ set(TI_WITH_OPENGL OFF CACHE BOOL "" FORCE)
 
 set(TI_WITH_VULKAN ON CACHE BOOL "" FORCE)
 set(TI_WITH_LTO ON CACHE BOOL "" FORCE)
+set(TI_WITH_STATIC_C_API ON CACHE BOOL "" FORCE)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 add_compile_options(-ffunction-sections -fdata-sections) # 减小体积
