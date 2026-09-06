@@ -28,6 +28,41 @@ PainterGPUBuffer::PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &pa
     best_ellipse = runtime.allocate_ndarray<float>({1}, {6}, true);
     best_ycbcr = runtime.allocate_ndarray<float>({1}, {3}, true);
     best_score = runtime.allocate_ndarray<float>({1}, {}, true);
+
+    // Taichi 的分配失败是静默的：ti_allocate_memory 失败只 set_last_error、返回
+    // null 句柄（不抛异常、无日志）。null ndarray 一旦继续使用，就会以
+    // VK_NULL_HANDLE 走到 vkCmdCopyBufferToImage / graph dispatch，在部分驱动上
+    // 直接闪退。这里显式校验，把"无声崩溃"变成一条可读的 error 日志。
+    bool all_valid = true;
+    auto check = [&all_valid](const auto &arr, const char *name) {
+        if (!arr.is_valid())
+        {
+            spdlog::error("[gpu] ndarray allocation failed: '{}' (TiMemory=null, likely OOM)", name);
+            all_valid = false;
+        }
+    };
+    check(canvas, "canvas");
+    check(target, "target");
+    check(target_origin, "target_origin");
+    check(error_field, "error_field");
+    check(error_field_buffer, "error_field_buffer");
+    check(sampled_pixels, "sampled_pixels");
+    check(hist_buffer, "hist_buffer");
+    check(valid_mask, "valid_mask");
+    check(valid_pixels, "valid_pixels");
+    check(valid_n_pixels, "valid_n_pixels");
+    check(best_ellipse, "best_ellipse");
+    check(best_ycbcr, "best_ycbcr");
+    check(best_score, "best_score");
+    if (!all_valid)
+    {
+        auto err = ti::get_last_error();
+        spdlog::error("[gpu] PainterGPUBuffer: {}x{} needs ~{} MB device memory; "
+                      "taichi last error: [{}] {}",
+                      params.canvas_w, params.canvas_h,
+                      (uint64_t)params.canvas_w * params.canvas_h * 56 / (1024 * 1024),
+                      (int)err.error, err.message);
+    }
 }
 
 // move assignment operator
@@ -283,6 +318,12 @@ void GPUWorker::resetCanvas()
     gpu_buffer.canvas = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, false);
     // canvas 是 device-only（host_access=false），用一次性 host-visible staging 写零。
     auto zeros_staging = runtime.allocate_ndarray<float>({params.canvas_h, params.canvas_w}, {3}, true);
+    if (!gpu_buffer.canvas.is_valid() || !zeros_staging.is_valid())
+    {
+        spdlog::error("[gpu] resetCanvas: canvas/staging allocation failed (OOM? {}x{})",
+                      params.canvas_w, params.canvas_h);
+        return;
+    }
     std::vector<float> zeros((size_t)params.canvas_h * params.canvas_w * 3, 0.0f);
     zeros_staging.write(zeros);
     zeros_staging.copy_to(gpu_buffer.canvas);

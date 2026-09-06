@@ -26,6 +26,17 @@ bool DisplayTexture::create(VkPhysicalDevice physical_device, VkDevice device, V
     h_ = h;
     format_ = format;
 
+    // R32G32B32_SFLOAT 的采样支持是 Vulkan 可选特性：不支持的设备上继续
+    VkFormatProperties fp{};
+    vkGetPhysicalDeviceFormatProperties(physical_device_, format_, &fp);
+    if ((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) == 0)
+    {
+        spdlog::error("DisplayTexture: format {} not sampleable on this device "
+                      "(optimalTilingFeatures = {:#x}), may crash",
+                      static_cast<int>(format_), fp.optimalTilingFeatures);
+        // return false;
+    }
+
     // 1. VkImage：TRANSFER_DST（接收拷贝）+ SAMPLED（ImGui 采样）
     VkImageCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -142,6 +153,16 @@ bool DisplayTexture::upload(const ti::NdArray<float> &src, ti::Runtime &runtime)
     // 导出 Taichi buffer 的底层 VkBuffer（同一 device，直接可用）
     TiVulkanMemoryInteropInfo mem_info = {};
     ti_export_vulkan_memory(runtime, src.memory().memory(), &mem_info);
+    // 分配失败的 ndarray（TiMemory=null）会让 export 提前返回、mem_info 保持全零。
+    // 不检查就把 null buffer 交给 vkCmdCopyBufferToImage，在多数驱动上直接闪退
+    // （host 侧 null 句柄解引用 AV，或 GPU 侧 fault → DEVICE_LOST → abort）。
+    if (mem_info.buffer == VK_NULL_HANDLE)
+    {
+        spdlog::error("DisplayTexture::upload: src ndarray has no VkBuffer "
+                      "(allocation failed / OOM? shape mismatch? {}x{})",
+                      w_, h_);
+        return false;
+    }
 
     // 录制单次命令：UNDEFINED/SHADER_READ_ONLY→TRANSFER_DST→拷贝→SHADER_READ_ONLY
     vkResetCommandPool(device_, pool_, 0);

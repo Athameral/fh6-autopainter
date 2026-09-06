@@ -81,6 +81,6 @@ class App
     void copyVectorToTarget();
 
     static float *stbi_loadf_utf8(const char *filename, int *x, int *y, int *channels_in_file,
-                                      int desired_channels);
+                                  int desired_channels);
     static void drawImage(const DisplayTexture &texture, bool fit);
 };

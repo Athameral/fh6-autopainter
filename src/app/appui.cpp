@@ -272,8 +272,8 @@ void App::renderCanvasPanel()
             // canvas 纹理已在 ensureDisplayTextures（拖图时）create+register；
             // 这里只 upload 最新内容。Start 前未拖图时 is_valid()=false → 跳过。
             if (canvas_tex.is_valid())
-        {
-            spdlog::debug("[main] canvas_ready, uploading to display texture...");
+            {
+                spdlog::debug("[main] canvas_ready, uploading to display texture...");
                 canvas_tex.upload(gpu_worker.gpu_buffer.canvas, runtime);
             }
         }
@@ -409,6 +409,13 @@ void App::copyVectorToTarget() // should be called after resetting params.
     // 一次性 host-visible staging 上传，避免把它们分配到 HOST_VISIBLE 内存。
     auto target_staging = runtime.allocate_ndarray<float>({(uint32_t)img_h, (uint32_t)img_w}, {3}, true);
     auto mask_staging = runtime.allocate_ndarray<int32_t>({(uint32_t)img_h, (uint32_t)img_w}, {}, true);
+    // 分配失败是静默的（null 句柄）；不检查就 write/copy_to 会把 null VkBuffer
+    // 交给驱动 → 部分设备直接闪退。这里留下日志并跳过本次上传。
+    if (!target_staging.is_valid() || !mask_staging.is_valid())
+    {
+        spdlog::error("[image] staging allocation failed (OOM? {}x{}); skip target upload", img_w, img_h);
+        return;
+    }
 
     target_staging.write(target_rgb);
     target_staging.copy_to(gpu_worker.gpu_buffer.target_origin);
