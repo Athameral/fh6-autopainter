@@ -296,6 +296,7 @@ void App::renderCanvasPanel()
 
 // 主线程：按需创建/重建两张显示纹理（图片加载完成、尺寸可能变化时调用）。
 // 尺寸未变时保留原纹理（descriptor 继续有效）；变了则 create() 内部先 destroy 再重建。
+// canvas 与 target 均在此 create + registerTexture；后续内容刷新由 upload 负责。
 void App::ensureDisplayTextures()
 {
     const uint32_t w = gpu_worker.params.canvas_w;
@@ -308,12 +309,33 @@ void App::ensureDisplayTextures()
     {
         canvas_tex.create(vk_physical_device, vk_device, vk_queue, vk_queue_family, w, h, fmt);
         canvas_tex.registerTexture(); // create 后立即 register；内容由 upload 刷新
+        // 立即 upload 一次：register 声明的是 SHADER_READ_ONLY，但新 image 停在
+        // UNDEFINED——不先转布局，本帧 renderCanvasPanel 就会采样一张
+        // "已注册但从未上传"的纹理（无效用法，严格驱动直接 fault → 闪退）。
+        uploadBlank(canvas_tex);
     }
     if (!target_tex.is_valid() || target_tex.width() != w || target_tex.height() != h)
     {
         target_tex.create(vk_physical_device, vk_device, vk_queue, vk_queue_family, w, h, fmt);
         target_tex.registerTexture(); // 与 canvas 统一：ensure 里 register，upload 只拷贝
+        // 同上：Start（未拖图）路径下 target 永远等不到内容 upload，必须在此转布局。
+        uploadBlank(target_tex);
     }
+}
+
+// 新建纹理的首次 upload：staging 不写内容（新分配的 host-visible 内存即初始画面），
+// 只为借 upload 内部的 recordCopy 完成 UNDEFINED→TRANSFER_DST→SHADER_READ_ONLY 转换。
+void App::uploadBlank(DisplayTexture &tex)
+{
+    const uint32_t w = gpu_worker.params.canvas_w, h = gpu_worker.params.canvas_h;
+    auto staging = runtime.allocate_ndarray<float>({h, w}, {3}, true);
+    staging.write(std::vector<float>(w * h * 3, 0.0f));
+    if (!staging.is_valid())
+    {
+        spdlog::error("[display] initial upload: staging allocation failed ({}x{})", w, h);
+        return;
+    }
+    tex.upload(staging, runtime);
 }
 
 void App::setTargetImagePath(const char *path)

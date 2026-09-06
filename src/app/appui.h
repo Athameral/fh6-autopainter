@@ -75,6 +75,9 @@ class App
     void renderDebugPanel();
     // 主线程：按需创建/重建两张显示纹理（图片加载/尺寸变化时调用一次）
     void ensureDisplayTextures();
+    // 新建纹理的首次 upload：唯一目的是完成 UNDEFINED→SHADER_READ_ONLY 布局转换，
+    // 消除"已注册但从未上传"的中间状态（该状态下被采样是无效用法，严格驱动直接 fault）。
+    void uploadBlank(DisplayTexture &tex);
     void copyVectorToTarget();
 
     static float *stbi_loadf_utf8(const char *filename, int *x, int *y, int *channels_in_file,
