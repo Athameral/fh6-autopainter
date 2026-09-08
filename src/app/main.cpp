@@ -410,7 +410,7 @@ int main(int, char **)
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     float main_scale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor()); // Valid on GLFW 3.3+ only
     GLFWwindow *window = glfwCreateWindow((int)(1280 * main_scale), (int)(800 * main_scale),
-                                          "Dear ImGui GLFW+Vulkan example", nullptr, nullptr);
+                                          "FH6-AutoPainter", nullptr, nullptr);
     if (!glfwVulkanSupported())
     {
         spdlog::error("GLFW: Vulkan Not Supported");
