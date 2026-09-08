@@ -54,4 +54,5 @@ struct PainterParams
     // cpu
     int32_t hill_climb_rounds;
     uint32_t total_shapes;
+    int32_t inject_group_shapes;
 };

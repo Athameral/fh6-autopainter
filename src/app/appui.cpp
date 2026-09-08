@@ -111,6 +111,8 @@ void App::renderControlPanel()
             }).detach();
         }
     }
+    ImGui::SameLine();
+    ImGui::InputInt("Shapes in your group", &params.inject_group_shapes);
     if (ImGui::Button("Force Relocate"))
     {
         if (inject_busy_.exchange(true))
@@ -121,7 +123,7 @@ void App::renderControlPanel()
         {
             std::thread([this]() {
                 spdlog::info("[inject-ui] force relocate started: template_layers={}", params.total_shapes);
-                const bool ok = injector_.Locate(params.total_shapes);
+                const bool ok = injector_.Locate(params.inject_group_shapes);
                 const auto loc = injector_.location();
                 spdlog::info("[inject-ui] force relocate: success={} locator='{}' group=0x{:x} vtable=0x{:x}",
                              ok,
