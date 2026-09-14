@@ -11,6 +11,19 @@
 #include "gpuworker.h"
 
 
+static bool check_ti(const char *where)
+{
+    auto err = ti::get_last_error();
+    if (err.error != TI_ERROR_SUCCESS)
+    {
+        spdlog::error("[gpu] taichi error at {}: [{}] {}",
+                      where, (int)err.error, err.message);
+        return false;
+    }
+    return true;
+}
+
+
 
 PainterGPUBuffer::PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &params)
     : runtime(runtime)
@@ -63,6 +76,16 @@ PainterGPUBuffer::PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &pa
                       (uint64_t)params.canvas_w * params.canvas_h * 56 / (1024 * 1024),
                       (int)err.error, err.message);
     }
+}
+
+bool PainterGPUBuffer::allBuffersValid() const
+{
+    return canvas.is_valid() && target.is_valid() && target_origin.is_valid() &&
+           error_field.is_valid() && error_field_buffer.is_valid() &&
+           sampled_pixels.is_valid() && hist_buffer.is_valid() &&
+           valid_mask.is_valid() && valid_pixels.is_valid() &&
+           valid_n_pixels.is_valid() && best_ellipse.is_valid() &&
+           best_ycbcr.is_valid() && best_score.is_valid();
 }
 
 // move assignment operator
@@ -174,14 +197,41 @@ void GPUWorker::run()
         launch_graph.wait(false); // Wait until launch_graph is set to true
         spdlog::debug("GPUWorker: Starting generation loop...");
 
+
+        bool round_failed = false;
+
         // set our params and buffers
         bind_graph_args();
-        g0.launch();
 
-        // g_m：构建 valid 像素列表（valid_pixels/valid_n_pixels）。
-        // target 不变 → 列表不变，每次 Start 执行一次即可（remakeBuffer 重建 buffer
-        // 后需要重新构建，故放在这里而非构造函数）。同队列 FIFO，先于 g1 执行。
-        g_m.launch();
+        // 【保护】分配失败的 ndarray（TiMemory=null）此前会照常绑进 graph，
+        // 后续 launch/copy 把 VK_NULL_HANDLE 交给驱动 → 部分设备闪退。
+        // PainterGPUBuffer ctor 已打 error 日志（含显存需求估算），这里直接中止本轮。
+        if (!gpu_buffer.allBuffersValid())
+        {
+            spdlog::error("[gpu] round aborted: ndarray allocation failed (OOM?); "
+                          "refusing to launch graphs with null handles");
+            round_failed = true;
+        }
+
+        if (!round_failed)
+        {
+            spdlog::info("[gpu] launching g0 (sharpen)...");
+            g0.launch();
+            round_failed = !check_ti("g0");
+        }
+        if (!round_failed)
+        {
+            spdlog::info("[gpu] g0 ok; launching g_m (build valid pixels)...");
+            g_m.launch();
+            round_failed = !check_ti("g_m");
+        }
+        if (!round_failed)
+        {
+            spdlog::info("[gpu] g_m ok; entering generation loop "
+                         "(canvas={}x{} samples={} mutations={} climb_rounds={})",
+                         params.canvas_w, params.canvas_h, params.random_samples,
+                         params.mutations_per_round, params.hill_climb_rounds);
+        }
         // runtime.wait(); // 调试：等 g_m 完成以便读回验证
 
         // 【调试探针】读回 valid 相关 buffer，验证 g_m 是否填充了 valid_pixels。
@@ -198,7 +248,7 @@ void GPUWorker::run()
 
         float diag = std::sqrt((float)(params.canvas_w * params.canvas_w + params.canvas_h * params.canvas_h));
         // step 0. sharpen image, optional, can be done on CPU
-        for (int step = 0; step < (int)params.total_shapes; ++step)
+        for (int step = 0; step < (int)params.total_shapes && !round_failed; ++step)
         {
             spdlog::debug("GPUWorker: Generating shape {} of {}", step + 1, params.total_shapes);
             if (generate_interrupted || should_exit)
@@ -217,25 +267,54 @@ void GPUWorker::run()
 
             // step 1. generate random ellipses, evaluate, and pick the best one
             // i.e. launch graph 1
+            spdlog::debug("[gpu] step {}/{}: g1 launching (error field + topk + random search) "
+                         "samples={} radius={:.1f} sample_step={}",
+                         step + 1, params.total_shapes, params.random_samples,
+                         dynamic_radius, dynamic_sample_step);
             g1.launch();
+            if (!check_ti("g1"))
+            {
+                round_failed = true;
+                break;
+            }
+            spdlog::debug("[gpu] step {}: g1 ok; g2 hill-climb {} rounds starting...",
+                          step + 1, params.hill_climb_rounds);
 
             // step 2. mutation hill climing
             // i.e. launch graph 2, for multiple rounds
             for (int r = 0; r < params.hill_climb_rounds; ++r)
             {
+                spdlog::debug("[gpu] step {}: g2 round {}/{} launching...",
+                              step + 1, r + 1, params.hill_climb_rounds);
                 g2.launch();
+                if (!check_ti("g2"))
+                {
+                    round_failed = true;
+                    break;
+                }
             }
+            if (round_failed)
+                break;
+            spdlog::debug("[gpu] step {}: g2 all rounds ok", step + 1);
 
             // step 3. draw the best ellipse on canvas
             // and write results to buffer, wait for reading.
+            spdlog::debug("[gpu] step {}: g3 (draw best ellipse) launching...", step + 1);
             g3.launch();
+            if (!check_ti("g3"))
+            {
+                round_failed = true;
+                break;
+            }
 
             // 【双队列】worker 独占 q1（compute queue）：runtime.wait() 只排空
             // 自己队列的命令（kernel + staging 拷贝），不被主线程 q0 的渲染拖住；
             // 同时回收 Taichi 内部 submitted_cmdbuffers_（fence/semaphore 泄漏根治）。
             // wait 返回 = q1 全部完成 = canvas 写入对后续 host 提交可见（fence 语义），
             // 主线程拿到 canvas_ready 后在 q0 拷贝/渲染即安全，无需额外 GPU 同步。
+            spdlog::debug("[gpu] step {}: g3 ok; runtime.wait (drain q1)...", step + 1);
             runtime.wait();
+            spdlog::debug("[gpu] step {}: wait ok; reading best_* back...", step + 1);
 
             // 【调试探针】每步读回全部关键 buffer，确认数据链路哪一环断了。
             // 所有 ndarray 已临时设 host accessible，runtime.wait() 后可直接 read。
@@ -272,6 +351,7 @@ void GPUWorker::run()
             std::array<float, 3> best_ycbcr_cpu_array;
             gpu_buffer.best_ellipse.read(best_ellipse_cpu_array.data(), 6);
             gpu_buffer.best_ycbcr.read(best_ycbcr_cpu_array.data(), 3);
+            spdlog::debug("[gpu] step {}: read ok; setting data_ready/canvas_ready", step + 1);
             best_ellipse_cpu.Shape = {best_ellipse_cpu_array[0], best_ellipse_cpu_array[1], best_ellipse_cpu_array[2],
                                          best_ellipse_cpu_array[3], best_ellipse_cpu_array[4], best_ellipse_cpu_array[5]};
             best_ellipse_cpu.Color = {best_ycbcr_cpu_array[0], best_ycbcr_cpu_array[1], best_ycbcr_cpu_array[2]};
@@ -287,7 +367,18 @@ void GPUWorker::run()
 
             // TODO: write ellipse to buffer and let gui read
             //（best_* read 已移到主线程 wait 之后，避免 host/device 竞争）
+            spdlog::debug("[gpu] step {}: waiting gui_ack...", step + 1);
             gui_ack.wait(false); // Wait for GUI to acknowledge that it has processed the results
+            spdlog::debug("[gpu] step {}: gui_ack ok; next shape", step + 1);
+        } // for (int step ...)
+
+        if (round_failed)
+        {
+            // 中止前排空 q1 在飞命令（防止后续 free buffer 与在飞命令竞争），
+            // 然后落回等待状态（等下一次 Start）。具体错误已在 check_ti /
+            // allBuffersValid 处打过 error 日志。
+            runtime.wait();
+            generate_interrupted = false;
         }
 
         // 一轮完成：复位 launch_graph，等用户再次 Start（否则 wait(false) 立即通过、无限重跑）
@@ -299,7 +390,18 @@ void GPUWorker::run()
 void GPUWorker::setParams(const PainterParams &new_params)
 {
     params = new_params;
-    remakeBuffer();
+    // 【闪退排查】Start 每次都无条件 remakeBuffer：先分配整套新 buffer 再释放旧的，
+    // 峰值显存 = 2×(~56B/px) + staging，4K 图 ~1.2GB——小显存设备（Win10 旧机器
+    // 常见 2GB 卡/iGPU）直接 OOM。只有影响 buffer 布局的参数变化时才重建。
+    if (new_params.canvas_w != old_canvas_w || new_params.canvas_h != old_canvas_h ||
+        new_params.random_samples != old_random_samples || new_params.sample_bins != old_sample_bins)
+    {
+        old_canvas_w = new_params.canvas_w;
+        old_canvas_h = new_params.canvas_h;
+        old_random_samples = new_params.random_samples;
+        old_sample_bins = new_params.sample_bins;
+        remakeBuffer();
+    }
 }
 
 void GPUWorker::remakeBuffer()

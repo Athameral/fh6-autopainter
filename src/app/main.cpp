@@ -194,6 +194,29 @@ static void SetupVulkan(ImVector<const char *> instance_extensions)
         exit(-1);
     }
 
+    // Print physical device properties
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(g_PhysicalDevice, &props);
+        VkPhysicalDeviceMemoryProperties mem{};
+        vkGetPhysicalDeviceMemoryProperties(g_PhysicalDevice, &mem);
+        uint64_t vram = 0;
+        for (uint32_t i = 0; i < mem.memoryHeapCount; ++i)
+            if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                vram += mem.memoryHeaps[i].size;
+        spdlog::info(
+            "[vulkan] device='{}' vendor=0x{:04x} id=0x{:04x} "
+            "vulkanApi={}.{}.{} driverVersion=0x{:x} deviceLocalHeap={} MB "
+            "maxComputeWorkGroupCount=({},{},{}) maxComputeWorkGroupInvocations={} "
+            "maxComputeSharedMemorySize={}",
+            props.deviceName, props.vendorID, props.deviceID,
+            VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
+            VK_API_VERSION_PATCH(props.apiVersion), props.driverVersion,
+            vram / (1024 * 1024), props.limits.maxComputeWorkGroupCount[0],
+            props.limits.maxComputeWorkGroupCount[1], props.limits.maxComputeWorkGroupCount[2],
+            props.limits.maxComputeWorkGroupInvocations, props.limits.maxComputeSharedMemorySize);
+    }
+
     // Create Logical Device (with 2 queues: q0 graphics, q1 compute)
     {
         ImVector<const char *> device_extensions;
@@ -401,6 +424,8 @@ static void FramePresent(ImGui_ImplVulkanH_Window *wd)
 // Main code
 int main(int, char **)
 {
+    // if no flush, when crash, the log will be lost.
+    spdlog::flush_on(spdlog::level::info);
     SetConsoleOutputCP(CP_UTF8);
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())

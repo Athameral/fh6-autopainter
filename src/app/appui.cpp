@@ -57,10 +57,19 @@ void App::renderControlPanel()
         // 重置计数 + 重分配 canvas + 销毁旧 canvas 显示纹理，让新一轮从干净状态开始。
         // 假设：用户点 Start 前 worker 已 Stop（无在飞 g1/g2/g3 引用旧 canvas）。
         resetStatus();
-        gpu_worker.should_exit = false;
-        gpu_worker.launch_graph = true;
-        gpu_worker.generate_interrupted = false;
-        gpu_worker.launch_graph.notify_one();
+        // 【闪退排查】buffer 分配失败（OOM）时拒绝启动：带 null ndarray 去 launch，
+        if (!gpu_worker.gpu_buffer.allBuffersValid())
+        {
+            spdlog::error("[ui] Start aborted: GPU buffers invalid "
+                          "(allocation failed, OOM?). Try a smaller image or free VRAM.");
+        }
+        else
+        {
+            gpu_worker.should_exit = false;
+            gpu_worker.launch_graph = true;
+            gpu_worker.generate_interrupted = false;
+            gpu_worker.launch_graph.notify_one();
+        }
     }
     if (ImGui::Button("Stop Worker"))
     {
@@ -416,6 +425,15 @@ void App::copyVectorToTarget() // should be called after resetting params.
     if (!target_staging.is_valid() || !mask_staging.is_valid())
     {
         spdlog::error("[image] staging allocation failed (OOM? {}x{}); skip target upload", img_w, img_h);
+        return;
+    }
+    // 目标 buffer 同理：拖图时 PainterGPUBuffer 若分配失败（大图 + 小显存），
+    // copy_to(null) 同样是无效用法 → 设备相关闪退。
+    if (!gpu_worker.gpu_buffer.target_origin.is_valid() || !gpu_worker.gpu_buffer.target.is_valid() ||
+        !gpu_worker.gpu_buffer.valid_mask.is_valid())
+    {
+        spdlog::error("[image] target GPU buffers invalid (allocation failed, OOM? {}x{}); skip target upload",
+                      img_w, img_h);
         return;
     }
 

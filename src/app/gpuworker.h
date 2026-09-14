@@ -14,6 +14,8 @@ class PainterGPUBuffer
     ti::NdArray<float> best_ellipse, best_ycbcr, best_score;
     PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &params);
     PainterGPUBuffer &operator=(PainterGPUBuffer &&other) noexcept;
+
+    bool allBuffersValid() const;
 };
 
 class GPUWorker
@@ -51,4 +53,8 @@ class GPUWorker
   private:
     void bind_graph_args();
     void run();
+    // 上次重建 buffer 时的布局相关参数：只有这些变化才真正 remakeBuffer
+    // （见 setParams，避免 Start 时无谓的 2× 显存峰值 → 小显存设备 OOM 闪退）。
+    uint32_t old_canvas_w = 0, old_canvas_h = 0;
+    int32_t old_random_samples = -1, old_sample_bins = -1;
 };
