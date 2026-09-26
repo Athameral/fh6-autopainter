@@ -297,6 +297,16 @@ void GPUWorker::run()
                 break;
             spdlog::debug("[gpu] step {}: g2 all rounds ok", step + 1);
 
+            // check whether the best ellipse is good enough, if not, skip drawing and retry
+            float score = -1e6f;
+            gpu_buffer.best_score.read(&score, 1);
+            if (score < 0.0f)
+            {
+                spdlog::debug("[gpu] step {}: best score={} < 0, skipping drawing", step + 1, score);
+                step--;
+                continue;
+            }
+
             // step 3. draw the best ellipse on canvas
             // and write results to buffer, wait for reading.
             spdlog::debug("[gpu] step {}: g3 (draw best ellipse) launching...", step + 1);
