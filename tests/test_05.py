@@ -70,6 +70,9 @@ valid_pixels = ti.ndarray(
 )  # 有效像素坐标列表
 valid_n_pixels = ti.ndarray(ti.i32, shape=(1,))  # 有效像素数量（有效像素列表长度）
 diag = np.sqrt(W * W + H * H).astype(np.float32)
+buf_ellipse = ti.ndarray(ti.types.vector(6, ti.f32), shape=(max(MUTATIONS_PER_ROUND, RANDOM_SAMPLES),))
+buf_ycbcr = ti.ndarray(ti.math.vec3, shape=(max(MUTATIONS_PER_ROUND, RANDOM_SAMPLES),))
+buf_score = ti.ndarray(ti.f32, shape=(max(MUTATIONS_PER_ROUND, RANDOM_SAMPLES),))
 
 def load_target():
     img = Image.open(IMG_PATH).convert("RGBA").resize((W, H), Image.LANCZOS)
@@ -122,6 +125,7 @@ def one_shape(shape_i: int, canvas: np.ndarray) -> np.ndarray:
         MIN_RADIUS, max_radius, MIN_ALPHA, MAX_ALPHA,
         RANDOM_SAMPLES, sampled_pixels,
         canvas, target, valid_mask, sample_step,
+        buf_ellipse, buf_ycbcr, buf_score,
         best_ellipse, best_ycbcr, best_score,
     )
     # ti.sync()
@@ -135,6 +139,7 @@ def one_shape(shape_i: int, canvas: np.ndarray) -> np.ndarray:
             MUTATIONS_PER_ROUND,
             move_step, radius_step, THETA_STEP_RAD, ALPHA_STEP,
             canvas, target, valid_mask, sample_step,
+            buf_ellipse, buf_ycbcr, buf_score,
             best_ellipse, best_ycbcr, best_score,
         )
     # ti.sync()
