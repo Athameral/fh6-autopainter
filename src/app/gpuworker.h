@@ -12,6 +12,7 @@ class PainterGPUBuffer
     ti::NdArray<float> canvas, target, target_origin, error_field, error_field_buffer, sampled_pixels;
     ti::NdArray<int32_t> valid_mask, valid_pixels, valid_n_pixels, hist_buffer;
     ti::NdArray<float> best_ellipse, best_ycbcr, best_score;
+    ti::NdArray<float> buf_ellipse, buf_ycbcr, buf_score;
     PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &params);
     PainterGPUBuffer &operator=(PainterGPUBuffer &&other) noexcept;
 

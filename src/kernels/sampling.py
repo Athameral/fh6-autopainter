@@ -129,7 +129,6 @@ def sample_from_error_topk(
     """
 
     n_samples_topk = ti.cast(n_samples * (1 - leak_ratio), ti.i32)
-    n_samples_leak = n_samples - n_samples_topk
 
     # 0. 重置归约 buffer 并清零直方图（hist_buffer 跨调用复用，不清零会累积）
     min_error = 999.0
@@ -177,6 +176,7 @@ def sample_from_error_topk(
             if idx < n_samples_topk:
                 out_sampled_pixels[idx] = ti.math.vec2(I[1], I[0])  # (x, y)
 
+    n_samples_leak = n_samples - ti.min(topk_count, n_samples_topk)
     for i in range(n_samples_leak):
         idx = ti.atomic_add(topk_count, 1)
         if idx < n_samples:

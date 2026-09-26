@@ -38,6 +38,9 @@ PainterGPUBuffer::PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &pa
     valid_mask = runtime.allocate_ndarray<int32_t>({params.canvas_h, params.canvas_w}, {}, false);
     valid_pixels = runtime.allocate_ndarray<int32_t>({params.canvas_h * params.canvas_w}, {2}, true);
     valid_n_pixels = runtime.allocate_ndarray<int32_t>({1}, {}, true);
+    buf_ellipse = runtime.allocate_ndarray<float>({(uint32_t)std::max(params.mutations_per_round, params.random_samples)}, {6}, true);
+    buf_ycbcr = runtime.allocate_ndarray<float>({(uint32_t)std::max(params.mutations_per_round, params.random_samples)}, {3}, true);
+    buf_score = runtime.allocate_ndarray<float>({(uint32_t)std::max(params.mutations_per_round, params.random_samples)}, {}, true);
     best_ellipse = runtime.allocate_ndarray<float>({1}, {6}, true);
     best_ycbcr = runtime.allocate_ndarray<float>({1}, {3}, true);
     best_score = runtime.allocate_ndarray<float>({1}, {}, true);
@@ -67,6 +70,9 @@ PainterGPUBuffer::PainterGPUBuffer(ti::Runtime &runtime, const PainterParams &pa
     check(best_ellipse, "best_ellipse");
     check(best_ycbcr, "best_ycbcr");
     check(best_score, "best_score");
+    check(buf_ellipse, "buf_ellipse");
+    check(buf_ycbcr, "buf_ycbcr");
+    check(buf_score, "buf_score");
     if (!all_valid)
     {
         auto err = ti::get_last_error();
@@ -85,7 +91,8 @@ bool PainterGPUBuffer::allBuffersValid() const
            sampled_pixels.is_valid() && hist_buffer.is_valid() &&
            valid_mask.is_valid() && valid_pixels.is_valid() &&
            valid_n_pixels.is_valid() && best_ellipse.is_valid() &&
-           best_ycbcr.is_valid() && best_score.is_valid();
+           best_ycbcr.is_valid() && best_score.is_valid() &&
+           buf_ellipse.is_valid() && buf_ycbcr.is_valid() && buf_score.is_valid();
 }
 
 // move assignment operator
@@ -107,6 +114,9 @@ PainterGPUBuffer &PainterGPUBuffer::operator=(PainterGPUBuffer &&other) noexcept
         best_ellipse = std::move(other.best_ellipse);
         best_ycbcr = std::move(other.best_ycbcr);
         best_score = std::move(other.best_score);
+        buf_ellipse = std::move(other.buf_ellipse);
+        buf_ycbcr = std::move(other.buf_ycbcr);
+        buf_score = std::move(other.buf_score);
     }
     return *this;
 }
@@ -154,6 +164,9 @@ void GPUWorker::bind_graph_args()
         g1["hist_buffer"] = gpu_buffer.hist_buffer;
         g1["valid_pixels"] = gpu_buffer.valid_pixels;
         g1["valid_n_pixels"] = gpu_buffer.valid_n_pixels;
+        g1["buf_ellipse"] = gpu_buffer.buf_ellipse;
+        g1["buf_ycbcr"] = gpu_buffer.buf_ycbcr;
+        g1["buf_score"] = gpu_buffer.buf_score;
         g1["best_ellipse"] = gpu_buffer.best_ellipse;
         g1["best_ycbcr"] = gpu_buffer.best_ycbcr;
         g1["best_score"] = gpu_buffer.best_score;
@@ -174,6 +187,9 @@ void GPUWorker::bind_graph_args()
         g2["canvas"] = gpu_buffer.canvas;
         g2["target"] = gpu_buffer.target;
         g2["valid_mask"] = gpu_buffer.valid_mask;
+        g2["buf_ellipse"] = gpu_buffer.buf_ellipse;
+        g2["buf_ycbcr"] = gpu_buffer.buf_ycbcr;
+        g2["buf_score"] = gpu_buffer.buf_score;
         g2["best_ycbcr"] = gpu_buffer.best_ycbcr;
         g2["best_score"] = gpu_buffer.best_score;
 

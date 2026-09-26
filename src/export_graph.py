@@ -16,6 +16,9 @@ valid_mask = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "valid_mask", dtype=ti.i32, 
 valid_pixels = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "valid_pixels", dtype=ti.types.vector(2, ti.i32), ndim=1)
 valid_n_pixels = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "valid_n_pixels", dtype=ti.i32, ndim=1)
 target_origin = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "target_origin", dtype=ti.math.vec3, ndim=2)
+buf_ellipse = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "buf_ellipse", dtype=ti.types.vector(6, dtype=ti.f32), ndim=1)
+buf_ycbcr = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "buf_ycbcr", dtype=ti.math.vec3, ndim=1)
+buf_score = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "buf_score", dtype=ti.f32, ndim=1)
 best_ellipse = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "best_ellipse", dtype=ti.types.vector(6, dtype=ti.f32), ndim=1)
 best_ycbcr = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "best_ycbcr", dtype=ti.math.vec3, ndim=1)
 best_score = ti.graph.Arg(ti.graph.ArgKind.NDARRAY, "best_score", dtype=ti.f32, ndim=1)
@@ -63,7 +66,7 @@ gb1.dispatch(sample_from_error_topk, RANDOM_SAMPLES, SAMPLE_BINS, SAMPLE_LEAK_RA
              valid_pixels, valid_n_pixels, hist_buffer, error_field, sampled_pixels)
 gb1.dispatch(generate_and_pick_best, MIN_RADIUS, MAX_RADIUS, MIN_ALPHA, MAX_ALPHA,
             RANDOM_SAMPLES, sampled_pixels, canvas, target, valid_mask, SAMPLE_STEP,
-            best_ellipse, best_ycbcr, best_score)
+            buf_ellipse, buf_ycbcr, buf_score, best_ellipse, best_ycbcr, best_score)
 
 # we have to cut the graph into 3 parts, since mutate_and_pick_best
 # will be called multiple times in a loop, and we cannot put a loop inside the graph.
@@ -71,6 +74,7 @@ gb2 = ti.graph.GraphBuilder()
 gb2.dispatch(mutate_and_pick_best, best_ellipse, MUTATIONS_PER_ROUND,
                      MOVE_STEP, RADIUS_STEP, THETA_STEP_RAD, ALPHA_STEP,
                      canvas, target, valid_mask, SAMPLE_STEP,
+                     buf_ellipse, buf_ycbcr, buf_score,
                      best_ellipse, best_ycbcr, best_score)
 
 gb3 = ti.graph.GraphBuilder()
