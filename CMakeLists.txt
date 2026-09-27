@@ -5,15 +5,28 @@ project(my_taichi_app CXX C)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 在顶层 CMakeLists.txt 同级查找 AOT 模块，并把路径传给 C++ 汇编代码。
-file(GLOB GRAPH_TCM_FILES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/graphs.tcm"
+# AoT graph exporting target
+set(GENERATED_TCM_BIN "${CMAKE_CURRENT_BINARY_DIR}/graphs.tcm")
+file(GLOB_RECURSE ALL_KERNEL_FILES
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/*.py"
 )
-if(NOT GRAPH_TCM_FILES)
-    message(FATAL_ERROR "graphs.tcm not found next to the top-level CMakeLists.txt, try export it first.")
-endif()
-list(GET GRAPH_TCM_FILES 0 GRAPH_TCM_FILE)
-file(TO_CMAKE_PATH "${GRAPH_TCM_FILE}" GRAPH_TCM_FILE)
+include(cmake/FindCustomPython.cmake)
+find_custom_python("taichi" TAICHI_PYTHON_EXECUTABLE)
+add_custom_command(
+    OUTPUT "${GENERATED_TCM_BIN}"
+    COMMAND "${TAICHI_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/src/export_graph.py"
+    DEPENDS "${ALL_KERNEL_FILES}" "${CMAKE_CURRENT_SOURCE_DIR}/src/export_graph.py"
+)
+# this will output the generated graphs.tcm file in the build directory
+# which will be linked into the final executable
+add_custom_target(generate_graphs ALL DEPENDS "${GENERATED_TCM_BIN}")
+
+add_library(kernel_tcm INTERFACE)
+add_dependencies(kernel_tcm generate_graphs)
+target_compile_definitions(
+    kernel_tcm INTERFACE "GRAPH_TCM_PATH=\"${GENERATED_TCM_BIN}\""
+)
 
 # 1. 强制控制子模块 Taichi 编译为静态库，且只编译 C-API
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
@@ -45,9 +58,9 @@ target_compile_definitions(app_spdlog INTERFACE SPDLOG_USE_STD_FORMAT)
 # set_target_properties(aot_assets PROPERTIES LINKER_LANGUAGE CXX)
 
 # 4. 主程序 Target（stb_impl.cpp 提供 stb_image/stb_image_write 实现）
-add_executable(my_app src/app/main.cpp)
+add_executable("fh6-autopainter" src/app/main.cpp)
 add_executable(test_app src/app/test.cpp)
-target_compile_definitions(my_app PRIVATE "GRAPH_TCM_PATH=\"${GRAPH_TCM_FILE}\"")
+target_link_libraries("fh6-autopainter" PRIVATE kernel_tcm)
 target_include_directories(test_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/c_api/include
@@ -67,14 +80,14 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
 )
-target_sources(my_app PRIVATE
+target_sources("fh6-autopainter" PRIVATE
     ${IMGUI_SOURCES}
     src/app/appui.cpp
     src/app/displaytexture.cpp
     src/app/gpuworker.cpp
     src/app/injector.cpp
 )
-target_include_directories(my_app PRIVATE
+target_include_directories("fh6-autopainter" PRIVATE
                            ${IMGUI_DIR}
                            ${IMGUI_DIR}/backends
                            # glfw
@@ -97,14 +110,14 @@ target_include_directories(my_app PRIVATE
 #   → 不需要安装 Vulkan SDK，也不需要链接 vulkan-1.lib。
 # 注意：不要用 IMGUI_IMPL_VULKAN_NO_PROTOTYPES（那只对 imgui 后端生效，
 #   main.cpp 自身的 vkCreateInstance 等直接调用仍会报未定义符号）。
-target_compile_definitions(my_app PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
-target_link_libraries(my_app PRIVATE glfw )
-target_link_libraries(my_app PRIVATE app_spdlog)
+target_compile_definitions("fh6-autopainter" PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
+target_link_libraries("fh6-autopainter" PRIVATE glfw )
+target_link_libraries("fh6-autopainter" PRIVATE app_spdlog)
 target_link_libraries(test_app PRIVATE app_spdlog)
 
 
 # # 5. 包含 Taichi C/C++ API 的头文件路径（external/include 提供 stb 单头文件库）
-target_include_directories(my_app PRIVATE
+target_include_directories("fh6-autopainter" PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/c_api/include
     ${CMAKE_CURRENT_SOURCE_DIR}/3rd/taichi/external/include
@@ -113,10 +126,10 @@ target_include_directories(my_app PRIVATE
 # # 6. 链接 Taichi 静态库、AOT 资源以及系统的图形驱动库
 #    注意：Vulkan 不需要显式链接！Taichi 与 GLFW 都在运行时动态加载 vulkan-1.dll
 #    （Taichi 通过 volk，GLFW 在 Windows 上默认行为）。
-target_link_libraries(my_app PRIVATE
+target_link_libraries("fh6-autopainter" PRIVATE
     taichi_c_api
 )
-target_link_options(my_app PRIVATE -static -Wl,--gc-sections -s -Wl,--icf=safe
+target_link_options("fh6-autopainter" PRIVATE -static -Wl,--gc-sections -s -Wl,--icf=safe
     # main.cpp 与 taichi 静态库内部都编译了 volk（VOLK_IMPLEMENTATION），
     # 两处定义语义相同（全局函数指针，运行时由 volkInitialize 填充），
     # 允许重复定义并取第一个（main.o 在前），否则链接会报 multiple definition。
