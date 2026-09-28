@@ -1,0 +1,99 @@
+name: Build Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  LLVM_MINGW_TAG: "20260922"
+  LLVM_MINGW_FILE: "llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64.tar.xz"
+  LLVM_MINGW_DIR: "/opt/llvm-mingw"
+  VENV_DIR: "/opt/venv-ci"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ---------- Python venv ----------
+      - name: Cache Python venv
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: venv-py3.13-${{ hashFiles('requirements-ci.txt') }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Setup Python venv
+        if: steps.venv-cache.outputs.cache-hit != 'true'
+        run: |
+          # --copies: copy the interpreter instead of symlinking, so the cached
+          # venv survives even if the base python symlink target shifts slightly
+          python -m venv --copies "$VENV_DIR"
+          "$VENV_DIR/bin/pip" install -r requirements-ci.txt
+
+      - name: Add venv to PATH
+        run: echo "$VENV_DIR/bin" >> "$GITHUB_PATH"
+
+      # ---------- llvm-mingw toolchain ----------
+      - name: Cache llvm-mingw
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LLVM_MINGW_DIR }}
+          key: llvm-mingw-${{ env.LLVM_MINGW_TAG }}
+
+      - name: Setup llvm-mingw
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_TAG}/${LLVM_MINGW_FILE}" -o /tmp/llvm-mingw.tar.xz
+          mkdir -p "$LLVM_MINGW_DIR"
+          tar -xf /tmp/llvm-mingw.tar.xz -C "$LLVM_MINGW_DIR" --strip-components=1
+
+      - name: Add llvm-mingw to PATH
+        run: echo "$LLVM_MINGW_DIR/bin" >> "$GITHUB_PATH"
+
+      # ---------- Vulkan loader + Mesa software drivers (no GPU in CI) ----------
+      - name: Cache apt packages
+        id: apt-cache
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-vulkan-ubuntu-latest
+
+      - name: Setup Vulkan (Mesa software drivers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+
+      # ---------- Build ----------
+      - name: Configure (CMake preset Release)
+        run: cmake --preset=Release
+
+      - name: Build
+        run: cmake --build out/build/Release/ --target fh6-autopainter
+
+      # ---------- Artifacts: Upload ----------
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: FH6-AutoPainter-uncompressed
+          path: out/build/Release/bin/fh6-autopainter.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/build/Release/bin/fh6-autopainter.exe
