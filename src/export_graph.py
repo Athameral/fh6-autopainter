@@ -48,7 +48,7 @@ ALPHA_STEP = ti.graph.Arg(ti.graph.ArgKind.SCALAR, "ALPHA_STEP", dtype=ti.f32)
 ## evaluation
 SAMPLE_STEP = ti.graph.Arg(ti.graph.ArgKind.SCALAR, "SAMPLE_STEP", dtype=ti.i32)
 
-ti.init(arch=ti.vulkan)
+ti.init(arch=ti.vulkan, enable_fallback=False)
 
 gb0 = ti.graph.GraphBuilder()
 gb0.dispatch(sharpen_kernel, target_origin, target, SHARPEN_INTENSITY)
