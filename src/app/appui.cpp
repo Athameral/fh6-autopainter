@@ -145,6 +145,7 @@ void App::renderControlPanel()
     }
     if (ImGui::CollapsingHeader("Parameters"))
     {
+        ImGui::InputInt("total_shapes", reinterpret_cast<int *>(&params.total_shapes), 1, 100);
         ImGui::SliderFloat("min_radius", &params.min_radius, 0.1f, 100.0f);
         ImGui::SliderFloat("max_radius", &params.max_radius, 0.001f, 0.2f);
         ImGui::SliderFloat("min_alpha", &params.min_alpha, 0.0f, 1.0f);
@@ -165,7 +166,6 @@ void App::renderControlPanel()
         ImGui::SliderFloat("alpha_step", &params.alpha_step, 0.01f, 1.0f);
         ImGui::SliderFloat("sample_step_deno", &params.sample_step_deno, 1.f, 10.f);
         ImGui::SliderInt("hill_climb_rounds", &params.hill_climb_rounds, 1, 50);
-        ImGui::SliderInt("total_shapes", reinterpret_cast<int *>(&params.total_shapes), 100, 10000);
     }
     ImGui::End();
 }
