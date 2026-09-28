@@ -81,7 +81,7 @@ jobs:
 
       # ---------- Build ----------
       - name: Configure (CMake preset Release)
-        run: cmake --preset=Release -DCMAKE_SYSTEM_NAME=Windows
+        run: cmake --preset=Release -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=AMD64
 
       - name: Build
         run: cmake --build out/build/Release/ --target fh6-autopainter
