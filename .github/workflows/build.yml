@@ -21,7 +21,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: |
+            3rd/imgui
+            3rd/taichi
+            3rd/taichi/external/FP16
+            3rd/taichi/external/PicoSHA2
+            3rd/taichi/external/SPIRV-Headers
+            3rd/taichi/external/SPIRV-Reflect
+            3rd/taichi/external/SPIRV-Tools
+            3rd/taichi/external/Vulkan-Headers
+            3rd/taichi/external/VulkanMemoryAllocator
+            3rd/taichi/external/eigen
+            3rd/taichi/external/glfw
+            3rd/taichi/external/spdlog
+            3rd/taichi/external/volk
 
       # ---------- Python venv ----------
       - name: Cache Python venv
