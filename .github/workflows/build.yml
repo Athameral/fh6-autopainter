@@ -21,6 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           submodules: |
             3rd/imgui
             3rd/taichi
