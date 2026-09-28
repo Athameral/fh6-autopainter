@@ -24,6 +24,11 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
+      # SPIRV-Tools is a nested submodule pointing at KhronosGroup/SPIRV-Tools
+      # (no push access). Carry local fixes as patches and apply them here.
+      - name: Apply SPIRV-Tools patches
+        run: git -C 3rd/taichi/external/SPIRV-Tools apply $GITHUB_WORKSPACE/patches/spirv-tools-include-type-traits.patch
+
       # ---------- Python venv ----------
       - name: Cache Python venv
         id: venv-cache
