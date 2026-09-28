@@ -48,9 +48,27 @@
 
 ### 环境要求
 - 现代 C++ 编译器工具链（例如 `llvm-mingw` 或 MSVC）
+- Ninja 构建系统
 - CMake（3.20 或更高版本）
 - Git
+- 已安装 `taichi` 包的 Python 3（`pip install taichi`），构建时用于导出 AOT 内核图
 
 > 注意：MSVC 是 `taichi` 在 Windows 平台上默认使用的编译器，通常可以直接工作（未经测试）。不过，为了确保项目可以在不额外下载其他依赖项的情况下顺利构建，推荐使用 `llvm-mingw` 作为编译器工具链。
 
-TODO
+### 构建步骤
+
+1. 克隆仓库并初始化子模块：
+```bash
+git clone https://github.com/Athameral/fh6-autopainter.git
+cd fh6-autopainter
+git submodule update --init 3rd/taichi 3rd/imgui
+git submodule update --init 3rd/taichi/external/FP16 3rd/taichi/external/PicoSHA2 3rd/taichi/external/SPIRV-Headers 3rd/taichi/external/SPIRV-Reflect 3rd/taichi/external/SPIRV-Tools 3rd/taichi/external/Vulkan-Headers 3rd/taichi/external/VulkanMemoryAllocator 3rd/taichi/external/eigen 3rd/taichi/external/glfw 3rd/taichi/external/spdlog 3rd/taichi/external/volk
+```
+
+2. CMake 构建：
+```bash
+cmake --preset=Release
+cmake --build out/build/Release/ --target fh6-autopainter
+```
+
+> 注意：`Release` 预设默认使用 `x86_64-w64-mingw32-gcc/g++` 编译器（llvm-mingw）和 Ninja 生成器，请确保它们已在 `PATH` 中。构建产物位于 `out/build/Release/bin/` 目录下。

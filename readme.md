@@ -48,9 +48,24 @@ If you prefer to build the project from source, follow the steps below:
 
 ### Prerequisites
 - A modern C++ compiler toolchain (e.g., `llvm-mingw` or MSVC).
+- Ninja build system.
 - CMake (version 3.20 or higher).
 - Git.
+- Python 3 with the `taichi` package installed (`pip install taichi`), used to export the AOT kernel graphs at build time.
  
 > Note: MSVC is the default compiler used by `taichi` on Windows platform, which should usually just work, though not tested. However, to ensure this project can be built without downloading additional dependencies, it is recommended to use `llvm-mingw` as the compiler toolchain.
 
-TODO
+### Build Steps
+
+1. Clone the repository and setup the submodules:
+```bash
+git clone https://github.com/Athameral/fh6-autopainter.git
+git submodule update --init 3rd/taichi 3rd/imgui
+git submodule update --init 3rd/taichi/external/FP16 3rd/taichi/external/PicoSHA2 3rd/taichi/external/SPIRV-Headers 3rd/taichi/external/SPIRV-Reflect 3rd/taichi/external/SPIRV-Tools 3rd/taichi/external/Vulkan-Headers 3rd/taichi/external/VulkanMemoryAllocator 3rd/taichi/external/eigen 3rd/taichi/external/glfw 3rd/taichi/external/spdlog 3rd/taichi/external/volk
+```
+
+2. CMake build:
+```bash
+cmake --preset=Release
+cmake --build out/build/Release/ --target fh6-autopainter
+```
