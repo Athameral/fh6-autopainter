@@ -22,22 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Init submodules
-        run: |
-          git submodule update --init 3rd/taichi 3rd/imgui
-          git submodule update --init \
-            3rd/taichi/external/FP16 \
-            3rd/taichi/external/PicoSHA2 \
-            3rd/taichi/external/SPIRV-Headers \
-            3rd/taichi/external/SPIRV-Reflect \
-            3rd/taichi/external/SPIRV-Tools \
-            3rd/taichi/external/Vulkan-Headers \
-            3rd/taichi/external/VulkanMemoryAllocator \
-            3rd/taichi/external/eigen \
-            3rd/taichi/external/glfw \
-            3rd/taichi/external/spdlog \
-            3rd/taichi/external/volk
+          submodules: recursive
 
       # ---------- Python venv ----------
       - name: Cache Python venv
