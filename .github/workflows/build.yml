@@ -85,8 +85,21 @@ jobs:
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
 
       # ---------- Build ----------
+      - name: Setup Ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-${{ runner.os }}-${{ env.LLVM_MINGW_TAG }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+          max-size: "2G"
+
       - name: Configure (CMake preset Release)
-        run: cmake --preset=Release -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=AMD64
+        run: |
+          cmake --preset=Release \
+          -DCMAKE_SYSTEM_NAME=Windows \
+          -DCMAKE_SYSTEM_PROCESSOR=AMD64 \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build out/build/Release/ --target fh6-autopainter
